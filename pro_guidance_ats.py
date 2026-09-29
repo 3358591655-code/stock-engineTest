@@ -239,7 +239,19 @@ def _extract_revenue_candidates(text):
             lo=_money_token(m.group(1),m.group(2)); hi=_money_token(m.group(3),m.group(4))
             if lo is None or hi is None or hi < lo or hi > 1e15:
                 continue
-            ctx=text[max(0,m.start()-300):min(len(text),m.end()+300)]
+            ctx=text[max(0,m.start()-420):min(len(text),m.end()+420)]
+            # Do not let a nearby "revenue" word cause an Opex / gross-margin /
+            # tax / OI&E range to be parsed as revenue. This exact false match
+            # produced AAPL 19.1–19.4B in the old UI.
+            lowctx=ctx.lower()
+            if re.search(r"operating expenses?|opex|gross margin|tax rate|oie|other income|operating income|ebitda|free cash flow", lowctx):
+                # Keep only if the matched sentence itself is explicitly a
+                # revenue/sales sentence and the range belongs to that sentence.
+                left=text.rfind('.', 0, m.start())
+                right=text.find('.', m.end())
+                sent=text[left+1:(right if right>=0 else len(text))].lower()
+                if not re.search(r"(?:revenue|sales)\b", sent) or re.search(r"operating expenses?|opex|gross margin|tax rate|oie|other income|operating income|ebitda|free cash flow", sent):
+                    continue
             out.append((lo,hi,ctx,m.start()))
     return out
 
@@ -324,6 +336,77 @@ def _quantify_revenue_growth_guidance(symbol, target_end, growth_low, growth_hig
     }
 
 
+
+def _marketbeat_earnings_page(symbol):
+    """Public earnings page fallback used only as a cross-check source.
+
+    MarketBeat exposes both quarterly consensus/actuals and the company's
+    revenue-guidance table on the earnings page. It is not treated as an
+    official issuer source; it is a public cross-check when SEC/transcript
+    retrieval is blocked from a cloud IP.
+    """
+    sym=str(symbol or '').strip().upper()
+    if not sym or any(x in sym for x in ('.HK','.SS','.SZ')):
+        return None, None
+    headers={**SEC_HEADERS,'User-Agent':os.getenv('AEL_WEB_USER_AGENT','Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36')}
+    for ex in ('NASDAQ','NYSE','AMEX'):
+        url=f'https://www.marketbeat.com/stocks/{ex}/{sym}/earnings/'
+        try:
+            r=requests.get(url,headers=headers,timeout=8)
+            if r.ok and len(r.text)>5000:
+                return _plain(r.text),url
+        except Exception:
+            continue
+    return None,None
+
+def _marketbeat_guidance(symbol,target_end=None):
+    text,url=_marketbeat_earnings_page(symbol)
+    if not text:
+        return None
+    low=text.lower()
+    # Determine the target fiscal year and month. MarketBeat labels rows as
+    # Q1/Q2/Q3/Q4 YYYY; for the common US fiscal calendar this is enough.
+    try:
+        td=pd.Timestamp(target_end)
+        year=int(td.year); month=int(td.month)
+    except Exception:
+        return None
+    # Prefer the exact fiscal quarter row if a quarter label can be inferred
+    # from the target month; otherwise search all same-year guidance rows and
+    # choose the one whose year/month context is closest to target.
+    q_guess=None
+    if month in (9,10): q_guess=4
+    elif month in (12,1): q_guess=1
+    elif month in (2,3,4): q_guess=2
+    elif month in (5,6,7): q_guess=3
+    labels=[f'Q{q_guess} {year}'] if q_guess else []
+    labels += [f'Q{q} {year}' for q in (1,2,3,4) if f'Q{q} {year}' not in labels]
+    for lab in labels:
+        pos=text.find(lab)
+        if pos<0: continue
+        ctx=text[pos:pos+420]
+        # Revenue guidance is the range after the revenue estimate. Avoid
+        # accidentally taking EPS ranges from the analyst table.
+        m=re.search(r'(?:Revenue Estimate|revenue estimate).*?(\d{2,4}(?:\.\d+)?)\s*B\s*[-–]\s*(\d{2,4}(?:\.\d+)?)\s*B',ctx,re.I|re.S)
+        if not m:
+            m=re.search(r'(\d{2,4}(?:\.\d+)?)\s*B\s*[-–]\s*(\d{2,4}(?:\.\d+)?)\s*B',ctx,re.I)
+        if not m: continue
+        lo,hi=float(m.group(1))*1e9,float(m.group(2))*1e9
+        if hi<lo or hi>1e13: continue
+        return {
+            'available':True,'eps_low':None,'eps_high':None,
+            'revenue_low':lo,'revenue_high':hi,
+            'revenue_growth_low':None,'revenue_growth_high':None,
+            'revenue_growth_basis':None,'revenue_growth_source_text':None,
+            'revenue_growth_quantified':None,'revenue_guidance_text':f'{lab} company revenue guidance {lo/1e9:.1f}B-{hi/1e9:.1f}B',
+            'filing_date':None,'filing_url':None,'document_url':url,
+            'period_end':target_end,'period_match':'marketbeat_fiscal_quarter',
+            'eps_basis':None,'revenue_basis':'public earnings-page company guidance cross-check',
+            'source':'MarketBeat earnings page · public cross-check','source_type':'marketbeat_crosscheck',
+            'official_vs_crosscheck':'crosscheck','error':None
+        }
+    return None
+
 def _sec_guidance(symbol, target_period, target_earnings_date):
     """Return only official, quarter-matched management guidance."""
     out={
@@ -338,12 +421,12 @@ def _sec_guidance(symbol, target_period, target_earnings_date):
     rows, err = _sec_filing_rows(symbol, target_earnings_date)
     if err:
         out["error"]=err
-        fallback=_transcript_guidance_fallback(symbol,target_end,target_earnings_date)
+        fallback=_marketbeat_guidance(symbol,target_end) or _transcript_guidance_fallback(symbol,target_end,target_earnings_date)
         return fallback or out
     cik, cik_err = _sec_cik(symbol)
     if not cik:
         out["error"]=cik_err or "SEC CIK unavailable"
-        fallback=_transcript_guidance_fallback(symbol,target_end,target_earnings_date)
+        fallback=_marketbeat_guidance(symbol,target_end) or _transcript_guidance_fallback(symbol,target_end,target_earnings_date)
         return fallback or out
     # Newest relevant earnings releases first. We inspect several because the
     # latest 8-K may be a correction/amendment without a guidance sentence.
@@ -423,7 +506,7 @@ def _sec_guidance(symbol, target_period, target_earnings_date):
     # SEC earnings releases frequently omit verbal CFO guidance. Use a separate
     # transcript cross-check only after official filing parsing fails. It is
     # explicitly labeled as third-party evidence and never called official.
-    fallback=_transcript_guidance_fallback(symbol,target_end,target_earnings_date)
+    fallback=_marketbeat_guidance(symbol,target_end) or _transcript_guidance_fallback(symbol,target_end,target_earnings_date)
     if fallback:
         return fallback
     out["error"]="未找到与目标财季严格匹配的可验证管理层季度指引"
@@ -511,35 +594,88 @@ def _transcript_guidance_fallback(symbol, target_end=None, target_earnings_date=
     return None
 
 def _guidance_whisper(consensus, guidance, nowcast, revisions, kind):
-    if kind == "eps":
-        c=_finite((consensus or {}).get("consensus")); g=_mid((guidance or {}).get("eps_low"),(guidance or {}).get("eps_high")); n=_finite((nowcast or {}).get("eps"))
-    else:
-        c=_finite((consensus or {}).get("consensus")); g=_mid((guidance or {}).get("revenue_low"),(guidance or {}).get("revenue_high")); n=_finite((nowcast or {}).get("revenue"))
-    rev=_finite((consensus or {}).get("revision_30d_pct"))
-    if rev is None: rev=_finite((consensus or {}).get("revision_7d_pct"))
-    hist_bias=_finite((revisions or {}).get(f"{kind}_bias_pct"))
-    if g is None:
-        # AEL Buy-Side may still form an independent model estimate when management
-        # does not publish a numeric metric. This is explicitly NOT company guidance.
-        comps=[]
-        if c is not None: comps.append(("卖方Consensus",c,0.65))
-        if n is not None: comps.append(("基本面Nowcast",n,0.35))
-        if not comps:
-            return {"value":None,"components":[],"status":"unavailable","reason":"无可验证管理层数值指引，且缺少足够公开数据建立AEL买方模型"}
-        sw=sum(w for _,_,w in comps); value=sum(v*w for _,v,w in comps)/sw
-        return {"value":value,"components":comps,"status":"inferred_no_direct_guidance","reason":"本财季未识别到管理层明确数值指引；AEL买方预期仅由卖方Consensus与基本面Nowcast独立推导，不冒充公司Guidance。","adjustments":[]}
+    """AEL buy-side interpretation of management guidance.
+
+    IMPORTANT: the official management guidance is evidence, not the buy-side
+    expectation itself.  This layer asks: "given what management said, what
+    would a disciplined buy-side model infer they actually mean?"
+    """
+    c = _finite((consensus or {}).get("consensus"))
+    n = _finite((nowcast or {}).get(kind))
+    g_lo = _finite((guidance or {}).get(f"{kind}_low"))
+    g_hi = _finite((guidance or {}).get(f"{kind}_high"))
+    g = _mid(g_lo, g_hi)
+    rev = _finite((consensus or {}).get("revision_30d_pct"))
+    if rev is None:
+        rev = _finite((consensus or {}).get("revision_7d_pct"))
+    hist_bias = _finite((revisions or {}).get(f"{kind}_bias_pct"))
+
+    # If management gave a numeric range, start from its midpoint.  The model
+    # then interprets conservatism/operating evidence instead of displaying the
+    # midpoint as if it were a buy-side forecast.
+    if g is not None:
+        components = [("管理层官方指引中值", g, 0.50)]
+        if c is not None:
+            components.append(("卖方Consensus作为外部锚", c, 0.18))
+        if n is not None:
+            components.append(("基本面Nowcast", n, 0.22))
+        # Historical consensus bias is deliberately weak; it is evidence about
+        # the company/forecast regime, not a substitute for management guidance.
+        if hist_bias is not None:
+            cap = 4.0 if kind == "eps" else 3.0
+            adj = _clamp(hist_bias, -cap, cap) * 0.10
+        else:
+            adj = 0.0
+        sw = sum(w for _, _, w in components)
+        value = sum(v*w for _, v, w in components) / sw
+        # Recent analyst revisions tell us whether the external market was
+        # already moving before management spoke. Keep the effect small.
+        if rev is not None:
+            value *= 1 + _clamp(rev, -6, 6) * 0.04 / 100.0
+        value *= 1 + adj / 100.0
+        return {
+            "value": value,
+            "components":[{"factor":n, "value":v, "weight":w} for n,v,w in components],
+            "adjustments":[{"factor":"历史/预测偏差校正", "pct":round(adj,3)},
+                           {"factor":"近期卖方修正校正", "pct":round(_clamp(rev, -6, 6)*0.04,3) if rev is not None else 0.0}],
+            "status":"inferred",
+            "reason":"官方管理层指引只是证据；AEL买方模型以指引中值为起点，再结合卖方外部锚、基本面Nowcast、历史偏差与近期修正推断管理层真正可能实现的区间。",
+        }
+
+    # Qualitative guidance: do not manufacture a company number.  If the
+    # company only says "low-to-mid single digit decline", the raw statement
+    # remains qualitative, while AEL can still form an independent model only
+    # when an observed consensus/nowcast exists.
     comps=[]
-    if g is not None: comps.append(("管理层Guidance中值",g,0.55))
-    if c is not None: comps.append(("卖方Consensus",c,0.25))
-    if n is not None: comps.append(("基本面Nowcast",n,0.20))
+    if c is not None: comps.append(("卖方Consensus",c,0.55))
+    if n is not None: comps.append(("基本面Nowcast",n,0.45))
+    if not comps:
+        return {"value":None,"components":[],"status":"unavailable",
+                "reason":"管理层仅给出定性指引，且缺少足够可验证的外部数据，AEL不伪造公司数字。",
+                "adjustments":[]}
     sw=sum(w for _,_,w in comps); value=sum(v*w for _,v,w in comps)/sw
-    adj=0.0; parts=[]
-    if rev is not None:
-        a=_clamp(rev,-6,6)*0.20; adj+=a; parts.append(("30D卖方预测修正",a))
-    if hist_bias is not None:
-        cap=5 if kind=="eps" else 3; a=_clamp(hist_bias,-cap,cap)*0.15; adj+=a; parts.append(("公司历史Consensus偏差",a))
-    value*=1+adj/100
-    return {"value":value,"components":[{"factor":n,"value":v,"weight":w} for n,v,w in comps],"adjustments":[{"factor":n,"pct":round(v,3)} for n,v in parts],"status":"inferred"}
+    return {"value":value,"components":[{"factor":n,"value":v,"weight":w} for n,v,w in comps],
+            "status":"inferred_no_direct_guidance",
+            "reason":"管理层没有给出该指标的明确数值区间；AEL数字是独立模型推断，不冒充公司官方指引。",
+            "adjustments":[]}
+
+
+def _price_in_ratio(base, target, market):
+    """How much of the management-intent delta is already embedded in market.
+
+    base   = sell-side consensus
+    target = AEL buy-side interpretation of management intent
+    market = AEL/ATS market-implied expectation
+    """
+    b,t,m=_finite(base),_finite(target),_finite(market)
+    if None in (b,t,m):
+        return {"ratio_pct":None,"gap_to_target":None,"market_delta":None,"guidance_delta":None,"status":"insufficient"}
+    guidance_delta=t-b
+    market_delta=m-b
+    if abs(guidance_delta) < max(abs(b)*0.001, 1e-12):
+        return {"ratio_pct":None,"gap_to_target":m-t,"market_delta":market_delta,"guidance_delta":guidance_delta,"status":"zero_guidance_delta"}
+    ratio=market_delta/guidance_delta*100.0
+    return {"ratio_pct":ratio,"gap_to_target":m-t,"market_delta":market_delta,"guidance_delta":guidance_delta,"status":"inferred"}
 
 
 def _gap_pct(a,b):
@@ -745,7 +881,16 @@ def analyze_guidance_ats(symbol: str):
         eps_g=_guidance_whisper((whisper.get("eps") or {}),guidance,whisper.get("fundamental_nowcast") or {},whisper.get("historical_surprise") or {},"eps")
         rev_g=_guidance_whisper((whisper.get("revenue") or {}),guidance,whisper.get("fundamental_nowcast") or {},whisper.get("historical_surprise") or {},"revenue")
         aw=_ats_whisper_score(ats,whisper); days=_finite(whisper.get("days_to_earnings")); temp=_temperature(ats,whisper,int(days) if days is not None else None); anomaly=_anomaly(ats); bt=_ats_backtest(symbol,ats)
-        four_layer=_four_layer_expectation(whisper, {"revenue":rev_cons,"eps":eps_cons}, {"revenue":rev_g["value"],"eps":eps_g["value"],"status":"inferred" if eps_g["value"] is not None or rev_g["value"] is not None else "unavailable","revenue_gap_vs_sell_side_pct":_gap_pct(rev_g["value"],rev_cons),"eps_gap_vs_sell_side_pct":_gap_pct(eps_g["value"],eps_cons),"method":"Management Guidance-centered independent blend: official management guidance midpoint + Sell-side Consensus + Fundamental Nowcast + small revision/history adjustments."}, aw)
+        four_layer=_four_layer_expectation(whisper, {"revenue":rev_cons,"eps":eps_cons}, {"revenue":rev_g["value"],"eps":eps_g["value"],"status":"inferred" if eps_g["value"] is not None or rev_g["value"] is not None else "unavailable","revenue_gap_vs_sell_side_pct":_gap_pct(rev_g["value"],rev_cons),"eps_gap_vs_sell_side_pct":_gap_pct(eps_g["value"],eps_cons),"method":"AEL buy-side interpretation of management intent; official guidance is evidence, not the model output."}, aw)
+        ats_layer=four_layer.get("ats_version") or {}
+        ael_pricein={
+            "revenue":_price_in_ratio(rev_cons,rev_g.get("value"), (whisper.get("revenue") or {}).get("implied")),
+            "eps":_price_in_ratio(eps_cons,eps_g.get("value"), (whisper.get("eps") or {}).get("implied")),
+        }
+        ats_pricein={
+            "revenue":_price_in_ratio(rev_cons,rev_g.get("value"),ats_layer.get("revenue")),
+            "eps":_price_in_ratio(eps_cons,eps_g.get("value"),ats_layer.get("eps")),
+        }
         result={
             "ok":True,"symbol":symbol,"as_of":datetime.now(timezone.utc).isoformat(),"independent":True,
             "sell_side":{"eps":eps_cons,"revenue":rev_cons,"earnings_date":target_earnings_date,"days_to_earnings":whisper.get("days_to_earnings")},
@@ -757,6 +902,12 @@ def analyze_guidance_ats(symbol: str):
                 "eps_gap_vs_sell_side_pct":_gap_pct(eps_g["value"],eps_cons),"revenue_gap_vs_sell_side_pct":_gap_pct(rev_g["value"],rev_cons),
                 "eps_components":eps_g["components"],"revenue_components":rev_g["components"],"eps_adjustments":eps_g.get("adjustments",[]),"revenue_adjustments":rev_g.get("adjustments",[]),
                 "method":"Management Guidance-centered independent blend: official management guidance midpoint + Sell-side Consensus + Fundamental Nowcast + small revision/history adjustments.",
+            },
+            "price_in":{
+                "definition":"Price-in = (市场隐含预期 - 卖方Consensus) / (AEL买方解读管理层意图 - 卖方Consensus) × 100%；不是概率，也不是方向预测。",
+                "ael":ael_pricein,"ats":ats_pricein,
+                "ael_market_implied":{"revenue":(whisper.get("revenue") or {}).get("implied"),"eps":(whisper.get("eps") or {}).get("implied")},
+                "ats_market_implied":{"revenue":ats_layer.get("revenue"),"eps":ats_layer.get("eps")},
             },
             "ats":ats,"ats_whisper":aw,"ats_backtest":bt,"anomaly_scanner":anomaly,"expectation_temperature":temp,
             "four_layer_expectation":four_layer,

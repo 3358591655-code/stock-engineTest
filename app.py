@@ -176,7 +176,7 @@ def pro_whisper_backtest(
         raise HTTPException(status_code=502, detail=f'AEL Whisper 回测失败：{str(exc)[:220]}')
 
 @app.get('/api/pro/fair-backtest/{symbol}')
-def pro_fair_backtest(symbol: str, periods: int = Query(8, ge=4, le=12)):
+def pro_fair_backtest(symbol: str, periods: int = Query(8, ge=4, le=40)):
     # New comparison-only layer. It does not modify AEL or ATS native backtests.
     try:
         return run_fair_backtest(symbol, periods)

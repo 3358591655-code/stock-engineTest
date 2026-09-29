@@ -1,260 +1,247 @@
-"""AEL vs ATS fair forecast backtest.
+"""Guidance Price-In Fair Backtest sidecar.
 
-This is a NEW comparison layer. It does not modify the original AEL Whisper
-backtest or the original ATS event/volatility backtest.
+The fair backtest is NOT an AEL-vs-ATS winner score. It asks the correct
+question: after management speaks, how much of the management-intent delta
+was already embedded in the market, and how well do the AEL and ATS versions
+reconstruct the eventual reported result without look-ahead?
 
-Fair benchmark:
-- same earnings events
-- same pre-event information cutoff
-- sell-side consensus is the baseline
-- compare absolute forecast error for revenue and EPS
-- score each model by how much it reduces error versus consensus
-
-Historical ATS replay uses only ATS weekly activity available before the event
-plus pre-event price direction. Historical option snapshots are not available
-from the current free data chain, so they are not backfilled.
+Historical options snapshots are not available in the free data chain, so the
+original AEL Market-Implied options layer is never backfilled with today's
+options. The historical AEL/ATS price-in replay therefore uses only verified
+pre-event inputs available to the sidecar.
 """
 from __future__ import annotations
-import math
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
-
+import math
 import pandas as pd
 import yfinance as yf
 
 from pro_ats import ats_source
+from pro_guidance_backtest import run_guidance_backtest
 from pro_whisper_backtest import run_whisper_backtest
 
+# Keep the import surface simple; duplicate the tiny replay helper rather than
+# importing private functions from the older fair-backtest module.
 
 def _finite(v):
     try:
-        x=float(v)
-        return x if math.isfinite(x) else None
-    except Exception:
-        return None
+        x=float(v); return x if math.isfinite(x) else None
+    except Exception: return None
 
+def _clamp(x,lo,hi): return max(lo,min(hi,x))
 
-def _clamp(x, lo, hi):
-    return max(lo, min(hi, x))
+def _pct(a,b):
+    a,b=_finite(a),_finite(b)
+    if a is None or b in (None,0): return None
+    return (a/b-1)*100.0
 
-
-def _abs_error(pred, actual):
-    p,a=_finite(pred),_finite(actual)
-    if p is None or a is None or a==0:return None
+def _error(p,a):
+    p,a=_finite(p),_finite(a)
+    if p is None or a in (None,0): return None
     return abs(p-a)/abs(a)*100.0
 
 
-def _improvement(baseline_error, model_error):
-    b,m=_finite(baseline_error),_finite(model_error)
-    if b is None or m is None or b<=0:return None
-    return (1.0-m/b)*100.0
+def _marketbeat_history(symbol):
+    """Public quarterly consensus/actual cross-check from MarketBeat.
+    Returns quarter-labeled revenue estimates/actuals when the public page is reachable.
+    """
+    import requests, re
+    sym=str(symbol or '').strip().upper()
+    if not sym or any(x in sym for x in ('.HK','.SS','.SZ')): return []
+    headers={'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36','Accept':'text/html,application/xhtml+xml'}
+    text=None
+    for ex in ('NASDAQ','NYSE','AMEX'):
+        try:
+            u=f'https://www.marketbeat.com/stocks/{ex}/{sym}/earnings/'
+            r=requests.get(u,headers=headers,timeout=8)
+            if r.ok and len(r.text)>5000:
+                from pro_guidance_ats import _plain
+                text=_plain(r.text); break
+        except Exception: pass
+    if not text:return []
+    rows=[]
+    pat=re.compile(r'(\d{1,2}/\d{1,2}/20\d{2})\s+(Q[1-4]\s+20\d{2})\s+\$?(-?\d+(?:\.\d+)?)\s+\$?(-?\d+(?:\.\d+)?)\s+\+?\$?(-?\d+(?:\.\d+)?)\s+\$?(-?\d+(?:\.\d+)?)\s+\$?(-?\d+(?:\.\d+)?)\s*B\s+\$?(-?\d+(?:\.\d+)?)\s*B',re.I)
+    for m in pat.finditer(text):
+        try:
+            rows.append({'report_date':m.group(1),'quarter':m.group(2),'eps_consensus':float(m.group(3)),'eps_actual':float(m.group(4)),'revenue_consensus':float(m.group(7))*1e9,'revenue_actual':float(m.group(8))*1e9})
+        except Exception: pass
+    # More permissive row parser for pages where Beat/Miss or GAAP columns differ.
+    if not rows:
+        for m in re.finditer(r'(\d{1,2}/\d{1,2}/20\d{2})\s+(Q[1-4]\s+20\d{2})\s+([^\n]{0,220})',text,re.I):
+            line=m.group(3)
+            nums=re.findall(r'(-?\d+(?:\.\d+)?)\s*B',line)
+            if len(nums)>=2:
+                rows.append({'report_date':m.group(1),'quarter':m.group(2),'revenue_consensus':float(nums[-2])*1e9,'revenue_actual':float(nums[-1])*1e9})
+    return rows
 
 
-def _earnings_history(symbol, limit=50):
-    try:
-        d=yf.Ticker(symbol).get_earnings_dates(limit=limit)
-        if d is None or d.empty:return []
-        out=[]
-        for idx in d.index:
-            try:
-                ts=pd.Timestamp(idx)
-                if ts.tzinfo is not None:ts=ts.tz_convert(None)
-                out.append(ts.normalize())
-            except Exception:pass
-        return sorted(set(out))
-    except Exception:
-        return []
+def _period_to_quarter_label(target_period, history_rows):
+    try: end=pd.Timestamp(target_period)
+    except Exception:return None
+    # Match the target fiscal period to the closest reported quarter date using
+    # the MarketBeat report date. This avoids assuming calendar-quarter ends.
+    cand=[]
+    for r in history_rows:
+        try:
+            rd=pd.Timestamp(r['report_date'])
+            if rd> end and (rd-end).days<=70: cand.append((abs((rd-end).days),r['quarter']))
+        except Exception: pass
+    return min(cand)[1] if cand else None
 
-
-def _price_frame(symbol):
-    try:
-        h=yf.Ticker(symbol).history(period="2y",interval="1d",auto_adjust=False)
-        if h is None or h.empty:return None
-        c=pd.to_numeric(h.get("Close"),errors="coerce").dropna()
-        if c.empty:return None
-        if getattr(c.index,"tz",None) is not None:c.index=c.index.tz_localize(None)
-        return c
-    except Exception:
-        return None
-
-
-def _historical_ats_signal(weeks, event_date, close):
-    """Replay ATS signal using only weeks and prices available before event."""
+def _historical_ats_signal(weeks,event_date,close):
     if not weeks:return None
-    ed=pd.Timestamp(event_date).normalize()
-    eligible=[]
+    ed=pd.Timestamp(event_date).normalize(); eligible=[]
     for w in weeks:
         try:
-            wt=pd.Timestamp(w.get("week")).normalize()
-            if wt<=ed:eligible.append((wt,w))
-        except Exception:pass
+            wt=pd.Timestamp(w.get('week')).normalize()
+            if wt<=ed: eligible.append((wt,w))
+        except Exception: pass
     if not eligible:return None
-    week_ts,w=eligible[-1]
-    # FINRA weeklySummary is keyed by week-start, while earnings dates are
-    # event dates.  Use the latest completed/pre-event week instead of requiring
-    # an exact calendar match.  A strict 14-day gate can incorrectly turn a
-    # valid pre-event observation into zero common samples when a week is absent.
-    staleness_days = (ed-week_ts).days
-    if staleness_days < 0 or staleness_days > 28:
-        return None
-
-    # ATS intensity: current share quantity versus the preceding 8 weeks.
-    hist=[_finite(x[1].get("ats_shares")) for x in eligible[:-1]]
+    wt,w=eligible[-1]; stale=(ed-wt).days
+    if stale<0 or stale>28:return None
+    hist=[_finite(x[1].get('ats_shares')) for x in eligible[:-1]]
     hist=[x for x in hist if x is not None and x>0][-8:]
-    current=_finite(w.get("ats_shares"))
-    z=None
-    if current is not None and len(hist)>=4:
-        mu=sum(hist)/len(hist)
-        sd=(sum((x-mu)**2 for x in hist)/max(1,len(hist)-1))**0.5
-        z=(current-mu)/sd if sd>0 else 0.0
-    prev=_finite(eligible[-2][1].get("ats_share_pct")) if len(eligible)>=2 else None
-    share=_finite(w.get("ats_share_pct"))
-    change=(share-prev) if share is not None and prev is not None else None
-
+    cur=_finite(w.get('ats_shares')); z=None
+    if cur is not None and len(hist)>=4:
+        mu=sum(hist)/len(hist); sd=(sum((x-mu)**2 for x in hist)/max(1,len(hist)-1))**0.5
+        z=(cur-mu)/sd if sd>0 else 0.0
+    prev=_finite(eligible[-2][1].get('ats_share_pct')) if len(eligible)>=2 else None
+    share=_finite(w.get('ats_share_pct')); change=(share-prev) if share is not None and prev is not None else None
     parts=[]
-    if z is not None:parts.append(_clamp(z/3,-1,1)*0.60)
-    if change is not None:parts.append(_clamp(change/5,-1,1)*0.40)
-    intensity=sum(parts)/sum([0.60,0.40][:len(parts)]) if parts else 0.0
-
-    # Pre-event price direction. This is explicitly not post-event information.
+    if z is not None: parts.append(_clamp(z/3,-1,1)*.60)
+    if change is not None: parts.append(_clamp(change/5,-1,1)*.40)
+    intensity=sum(parts)/sum([.60,.40][:len(parts)]) if parts else 0.0
     direction=0.0
     if close is not None and not close.empty:
         pre=close[close.index<=ed]
         if len(pre)>=21:
-            p0=_finite(pre.iloc[-21]);p1=_finite(pre.iloc[-1])
-            if p0 and p1:direction=_clamp((p1/p0-1)*100/12,-1,1)
-
-    # ATS activity controls intensity; price direction supplies the sign.
-    signed=direction*max(0.25,abs(intensity)) if direction!=0 else 0.0
+            p0=_finite(pre.iloc[-21]); p1=_finite(pre.iloc[-1])
+            if p0 and p1: direction=_clamp((p1/p0-1)*100/12,-1,1)
+    signed=direction*max(.25,abs(intensity)) if direction else 0.0
     score=50+50*_clamp(signed,-1,1)
-    return {
-        "week":week_ts.date().isoformat(),
-        "ats_data_staleness_days":staleness_days,
-        "ats_share_pct":share,
-        "ats_z":z,
-        "ats_share_change_pct":change,
-        "pre_event_price_direction_pct":None if close is None else (float(direction)*12 if direction else 0.0),
-        "ats_signal_score":score,
-        "direction":"偏正向" if signed>=0.20 else "偏负向" if signed<=-0.20 else "中性",
-        "lookahead_free":True,
-    }
+    return {'week':wt.date().isoformat(),'staleness_days':stale,'score':score,'direction':'up' if signed>=.20 else 'down' if signed<=-.20 else 'neutral'}
 
+def _ats_estimate(consensus,signal,kind):
+    c=_finite(consensus); s=_finite((signal or {}).get('score'))
+    if c is None or s is None:return None
+    d=str((signal or {}).get('direction') or '')
+    sign=1 if d=='up' else -1 if d=='down' else 0
+    intensity=_clamp(abs(s-50)/50,0,1); cap=2.5 if kind=='revenue' else 4.0
+    return c*(1+sign*intensity*cap/100)
 
-def _ats_estimate(consensus, signal, kind):
-    c=_finite(consensus)
-    if c is None or signal is None:return None
-    score=_finite(signal.get("ats_signal_score"))
-    direction=str(signal.get("direction") or "")
-    if score is None:return None
-    sign=1 if "正" in direction else -1 if "负" in direction else 0
-    intensity=_clamp(abs(score-50)/50,0,1)
-    cap=2.5 if kind=="revenue" else 4.0
-    adj=sign*intensity*cap
-    return c*(1+adj/100.0)
+def _pricein(base,intent,market):
+    b,i,m=_finite(base),_finite(intent),_finite(market)
+    if None in (b,i,m):return None
+    delta=i-b
+    if abs(delta)<max(abs(b)*.001,1e-12):return None
+    return (m-b)/delta*100.0
 
-
-def _metric_summary(rows, metric):
-    # Only quarters with all three forecasts/errors enter the metric comparison.
-    paired=[]
+def _match_whisper(actual, rows, call_date=None):
+    if not rows:return None
+    ar=_finite(actual.get('revenue')); ae=_finite(actual.get('eps')); cd=pd.Timestamp(call_date) if call_date else None
+    cand=[]
     for r in rows:
-        b=_finite(r.get(f"{metric}_consensus_error_pct")); ae=_finite(r.get(f"{metric}_ael_error_pct")); at=_finite(r.get(f"{metric}_ats_error_pct"))
-        if b is not None and ae is not None and at is not None:
-            paired.append((b,ae,at))
-    if not paired:
-        return {"有效样本":0,"卖方平均绝对误差":None,"AEL平均绝对误差":None,"ATS平均绝对误差":None,"AEL相对卖方误差改善":None,"ATS相对卖方误差改善":None}
-    be=sum(x[0] for x in paired)/len(paired); ae=sum(x[1] for x in paired)/len(paired); at=sum(x[2] for x in paired)/len(paired)
-    return {
-        "有效样本":len(paired),
-        "卖方平均绝对误差":be,
-        "AEL平均绝对误差":ae,
-        "ATS平均绝对误差":at,
-        "AEL相对卖方误差改善":_improvement(be,ae),
-        "ATS相对卖方误差改善":_improvement(be,at),
-    }
+        if cd is not None:
+            try:
+                ed=pd.Timestamp(r.get('event_date'))
+                if ed<=cd: continue
+                if (ed-cd).days>150: continue
+            except Exception: continue
+        score=0
+        rr=_finite(r.get('revenue_actual')); ee=_finite(r.get('eps_actual'))
+        if ar is not None and rr is not None:
+            rel=abs(rr-ar)/max(abs(ar),1); score += 100 if rel<0.0005 else 50 if rel<0.01 else 0
+        if ae is not None and ee is not None:
+            rel=abs(ee-ae)/max(abs(ae),.01); score += 100 if rel<0.001 else 50 if rel<0.03 else 0
+        if score: cand.append((score,r))
+    return max(cand,key=lambda x:x[0])[1] if cand else None
 
+def _management_bias_prior(rows, idx, metric):
+    errs=[]
+    for r in rows[:idx]:
+        g=r.get('guidance') or {}; a=r.get('actual') or {}
+        if metric=='revenue' and g.get('revenue_growth_low') is not None and a.get('revenue_growth_pct') is not None:
+            mid=(g['revenue_growth_low']+g['revenue_growth_high'])/2; errs.append(a['revenue_growth_pct']-mid)
+        elif metric=='eps' and g.get('eps_low') is not None and a.get('eps') is not None:
+            mid=(g['eps_low']+g['eps_high'])/2; errs.append(a['eps']-mid)
+    return sum(errs[-8:])/len(errs[-8:]) if errs else 0.0
 
-def _score(improvements):
-    vals=[_finite(x) for x in improvements if _finite(x) is not None]
-    if not vals:return None
-    # 50 = same error as sell-side; 100 = 100% error reduction; 0 = 100% worse.
-    return round(_clamp(50+sum(vals)/len(vals)*0.5,0,100),1)
-
-
-def run_fair_backtest(symbol: str, periods: int = 8) -> Dict[str,Any]:
-    symbol=str(symbol or "").strip().upper()
-    try:periods=int(periods or 8)
-    except Exception:periods=8
-    periods=max(4,min(12,periods))
-    if not symbol:return {"ok":False,"error":"缺少标的"}
+def run_fair_backtest(symbol:str,periods:int=8):
+    symbol=str(symbol or '').strip().upper(); periods=max(4,min(12,int(periods or 8)))
+    if not symbol:return {'ok':False,'error':'缺少标的'}
     try:
-        ael=run_whisper_backtest(symbol,max(8,periods+4))
-        ael_rows=ael.get("rows") or []
-        ats=ats_source(symbol)
-        weeks=ats.get("weeks") or []
-        close=_price_frame(symbol)
-        if not weeks:
-            return {"ok":True,"symbol":symbol,"status":"insufficient","periods_requested":periods,"valid_samples":0,"reason":"当前可用 ATS 周度历史不足，无法建立公平回测；不伪造结果。","rows":[]}
-
-        # AEL rows are the common event spine. Only events for which ATS has a
-        # pre-event weekly observation can enter the fair comparison.
+        gb=run_guidance_backtest(symbol,max(periods+4,12)); grows=gb.get('rows') or []
+        if not grows:
+            return {'ok':True,'symbol':symbol,'status':'insufficient','valid_samples':0,'periods_requested':periods,'rows':[],'reason':'没有可严格匹配的历史管理层下一财季指引。'}
+        wb=run_whisper_backtest(symbol,max(periods+6,14)); wrows=wb.get('rows') or []
+        mb_rows=_marketbeat_history(symbol)
+        ats=ats_source(symbol); weeks=ats.get('weeks') or []
+        h=yf.Ticker(symbol).history(period='2y',interval='1d',auto_adjust=False)
+        close=pd.to_numeric(h.get('Close'),errors='coerce').dropna() if h is not None and not h.empty else None
         candidates=[]
-        for r in ael_rows:
-            try:ed=pd.Timestamp(r.get("event_date")).normalize()
-            except Exception:continue
-            sig=_historical_ats_signal(weeks,ed,close)
-            if not sig:continue
-            if not any(_finite(r.get(k)) is not None for k in ("eps_consensus","eps_actual","revenue_consensus","revenue_actual")):continue
-            rr=dict(r)
-            rr["ats_signal"]=sig
-            rr["ats_eps"]=_ats_estimate(r.get("eps_consensus"),sig,"eps")
-            rr["ats_revenue"]=_ats_estimate(r.get("revenue_consensus"),sig,"revenue")
-            for m in ("eps","revenue"):
-                rr[f"{m}_consensus_error_pct"]=_abs_error(r.get(f"{m}_consensus"),r.get(f"{m}_actual"))
-                rr[f"{m}_ael_error_pct"]=_abs_error(r.get(f"{m}_whisper"),r.get(f"{m}_actual"))
-                rr[f"{m}_ats_error_pct"]=_abs_error(rr.get(f"ats_{m}"),r.get(f"{m}_actual"))
-                rr[f"{m}_ael_improvement_pct"]=_improvement(rr.get(f"{m}_consensus_error_pct"),rr.get(f"{m}_ael_error_pct"))
-                rr[f"{m}_ats_improvement_pct"]=_improvement(rr.get(f"{m}_consensus_error_pct"),rr.get(f"{m}_ats_error_pct"))
-            candidates.append(rr)
-
-        # One row per actual earnings event.  This prevents duplicate Yahoo
-        # snapshots for the same event from inflating the comparison.
-        deduped={}
-        for rr in candidates:
-            key=str(rr.get("event_date") or "")[:10]
-            if key and key not in deduped:
-                deduped[key]=rr
-        candidates=sorted(deduped.values(),key=lambda r:r.get("event_date") or "")[-periods:]
+        grows=sorted(grows,key=lambda r:r.get('target_period') or '')
+        for i,g in enumerate(grows):
+            actual=g.get('actual') or {}; call_date=g.get('call_date')
+            wr=_match_whisper(actual,wrows,call_date)
+            # Revenue consensus can be sourced independently from MarketBeat's
+            # public quarterly earnings history. Do not require the legacy
+            # Whisper backtest to succeed just to build a fair Price-in sample.
+            if wr is None:
+                qlab=None
+                try: qlab=_period_to_quarter_label(g.get('target_period'),mb_rows)
+                except Exception: pass
+                if qlab:
+                    hit=next((x for x in mb_rows if x.get('quarter')==qlab),None)
+                    if hit:
+                        wr={'event_date':hit.get('report_date'),'revenue_consensus':hit.get('revenue_consensus'),'revenue_actual':hit.get('revenue_actual'),'eps_consensus':hit.get('eps_consensus'),'eps_actual':hit.get('eps_actual')}
+            if not wr: continue
+            sig=_historical_ats_signal(weeks,wr.get('event_date'),close) if weeks else None
+            # Revenue intent is the cleanest common metric because management
+            # often gives revenue guidance while EPS guidance is absent.
+            rev_cons=_finite(wr.get('revenue_consensus')); rev_actual=_finite(wr.get('revenue_actual'))
+            eps_cons=_finite(wr.get('eps_consensus')); eps_actual=_finite(wr.get('eps_actual'))
+            rev_g=g.get('guidance') or {}; rev_mid=None; eps_mid=None
+            if rev_g.get('revenue_growth_low') is not None and actual.get('revenue_growth_pct') is not None:
+                midg=(rev_g['revenue_growth_low']+rev_g['revenue_growth_high'])/2
+                prior=actual.get('revenue')/(1+actual.get('revenue_growth_pct')/100) if actual.get('revenue_growth_pct') is not None else None
+                if prior is not None: rev_mid=prior*(1+(midg+_management_bias_prior(grows,i,'revenue')*.50)/100)
+            elif rev_g.get('revenue_low') is not None:
+                midg=(rev_g['revenue_low']+rev_g['revenue_high'])/2; rev_mid=midg*(1+_management_bias_prior(grows,i,'revenue')*.002)
+            if rev_mid is None: continue
+            # AEL historical buy-side interpretation = management midpoint +
+            # a shrunk company-specific management conservatism correction.
+            ael_market=rev_cons
+            if sig is not None: ael_market=_ats_estimate(rev_cons,sig,'revenue') if _finite(rev_cons) is not None else None
+            # Without historical options snapshots, use the pre-event market/ATS
+            # reconstruction as the ATS market-implied expectation. The AEL
+            # native options layer is explicitly not backfilled.
+            ats_market=ael_market
+            # For AEL price-in replay, use pre-event price direction as a
+            # separate market signal applied to the AEL intent delta.
+            ael_adj=0.0
+            if close is not None:
+                pre=close[close.index<=pd.Timestamp(wr.get('event_date'))]
+                if len(pre)>=21:
+                    p0=_finite(pre.iloc[-21]);p1=_finite(pre.iloc[-1])
+                    if p0 and p1:ael_adj=_clamp((p1/p0-1)*100/12,-1,1)*2.5
+            ael_market=rev_cons*(1+ael_adj/100) if rev_cons is not None else None
+            ael_pi=_pricein(rev_cons,rev_mid,ael_market); ats_pi=_pricein(rev_cons,rev_mid,ats_market)
+            candidates.append({
+                'financial_period':g.get('target_period'),'event_date':wr.get('event_date'),'sell_side_revenue':rev_cons,
+                'management_guidance':{'low':rev_g.get('revenue_growth_low'),'high':rev_g.get('revenue_growth_high'),'midpoint_growth':(rev_g.get('revenue_growth_low')+rev_g.get('revenue_growth_high'))/2 if rev_g.get('revenue_growth_low') is not None else None},
+                'ael_buy_side_revenue':rev_mid,'ael_market_implied_revenue':ael_market,'ats_market_implied_revenue':ats_market,
+                'actual_revenue':rev_actual,'ael_pricein_pct':ael_pi,'ats_pricein_pct':ats_pi,
+                'ael_error_pct':_error(ael_market,rev_actual),'ats_error_pct':_error(ats_market,rev_actual),
+                'consensus_error_pct':_error(rev_cons,rev_actual),'ats_signal':sig,'lookahead_free':True
+            })
+        candidates=sorted(candidates,key=lambda r:r.get('financial_period') or '')[-periods:]
         if not candidates:
-            return {"ok":True,"symbol":symbol,"status":"insufficient","periods_requested":periods,"valid_samples":0,"reason":"没有同时具备卖方历史预期、实际财报和财报前 ATS 数据的共同财报季度。","rows":[]}
-
-        eps=_metric_summary(candidates,"eps");rev=_metric_summary(candidates,"revenue")
-        improvements=[eps.get("AEL相对卖方误差改善"),rev.get("AEL相对卖方误差改善")]
-        ael_score=_score(improvements)
-        improvements=[eps.get("ATS相对卖方误差改善"),rev.get("ATS相对卖方误差改善")]
-        ats_score=_score(improvements)
-        available_scores=[x for x in (ael_score,ats_score) if x is not None]
-        conclusion="暂无足够共同样本"
-        if ael_score is not None and ats_score is not None:
-            gap=ael_score-ats_score
-            if abs(gap)<3:conclusion="两者接近"
-            elif gap>0:conclusion="AEL"
-            else:conclusion="ATS"
-        return {
-            "ok":True,"symbol":symbol,"status":"backtested" if len(candidates)>=4 else "low_sample",
-            "as_of":datetime.now(timezone.utc).isoformat(),"periods_requested":periods,"valid_samples":len(candidates),
-            "ael_score":ael_score,"ats_score":ats_score,"conclusion":conclusion,
-            "eps":eps,"revenue":rev,
-            "rows":candidates,
-            "matching_diagnostics": {
-                "ael_event_rows_considered": len(ael_rows),
-                "common_events_found": len(candidates),
-                "ats_matching_rule": "latest FINRA pre-event weekStartDate <= earnings event date; maximum 28 calendar days stale; no post-event ATS data used",
-                "ats_week_count": len(weeks),
-            },
-            "fair_rule":"相同财报事件 + 相同信息截止点 + 卖方共识作为基准 + 同一绝对误差公式；分数仅用于AEL与ATS横向比较。",
-            "point_in_time":"AEL使用历史公开估计重演；ATS只使用财报前ATS周度活动与财报前价格方向，不使用财报后的数据。",
-            "ats_limitation":"当前免费ATS历史为滚动12个月；历史期权快照不可验证，因此公平ATS回放不使用今天的期权数据倒填过去。",
-            "score_definition":"50分=与卖方误差相同；每改善卖方误差2个百分点，比较分数提高1分；100分封顶。",
-        }
+            return {'ok':True,'symbol':symbol,'status':'insufficient','valid_samples':0,'periods_requested':periods,'rows':[],'reason':'没有同时具备管理层指引、卖方共识、实际营收及财报前ATS/市场数据的共同季度。'}
+        def mean(key):
+            xs=[_finite(r.get(key)) for r in candidates]; xs=[x for x in xs if x is not None]; return sum(xs)/len(xs) if xs else None
+        return {'ok':True,'symbol':symbol,'status':'backtested' if len(candidates)>=4 else 'low_sample','periods_requested':periods,'valid_samples':len(candidates),
+                'ael_pricein_avg_pct':mean('ael_pricein_pct'),'ats_pricein_avg_pct':mean('ats_pricein_pct'),
+                'ael_mae_pct':mean('ael_error_pct'),'ats_mae_pct':mean('ats_error_pct'),'consensus_mae_pct':mean('consensus_error_pct'),
+                'rows':candidates,'definition':'管理层官方指引 → AEL买方解读 → 市场已经Price-in多少；AEL/ATS只比较其市场隐含预期的历史重演，不比较原有ATS异常分数。','limitation':'免费数据没有可验证的逐财报历史期权快照，因此历史AEL Market-Implied不倒填今天的期权数据；ATS使用财报前可得ATS活动与价格方向。'}
     except Exception as exc:
-        return {"ok":False,"symbol":symbol,"status":"error","error":str(exc)[:220],"rows":[]}
+        return {'ok':False,'symbol':symbol,'status':'error','valid_samples':0,'rows':[],'error':str(exc)[:220]}
