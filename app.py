@@ -22,11 +22,12 @@ from pro_backtest import run_backtest
 from pro_expectation import analyze_expectation
 from pro_whisper import analyze_whisper, invalidate_whisper_cache
 from pro_whisper_backtest import run_whisper_backtest
+from pro_guidance_ats import analyze_guidance_ats
 from ael_treasury import analyze_treasury
 from asset_data import get_asset, get_asset_index, get_asset_news
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = '2.6.11-LITE-SCAN-MORNINGSTAR-REPAIR'
+APP_VERSION = '2.6.14-GUIDANCE-ATS-SIDECAR'
 app = FastAPI(title='AEL 股票基本面驾驶舱', version=APP_VERSION)
 # Pro is an extension layer. It has independent routes and never changes Lite scan/core logic.
 app.include_router(pro_options_router)
@@ -171,6 +172,15 @@ def pro_whisper_backtest(
         return result
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f'AEL Whisper 回测失败：{str(exc)[:220]}')
+
+@app.get('/api/pro/guidance-ats/{symbol}')
+def pro_guidance_ats(symbol: str):
+    # Independent sidecar research: Guidance Whisper + ATS Whisper + backtest.
+    # Never modifies the original Whisper or any Lite/SINGLE/MARKET SCAN path.
+    try:
+        return analyze_guidance_ats(symbol)
+    except Exception as exc:
+        return {'ok': False, 'symbol': symbol.upper(), 'independent': True, 'error': str(exc)[:220]}
 
 @app.get('/api/pro/whisper/{symbol}')
 def pro_whisper(symbol: str):
