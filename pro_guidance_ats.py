@@ -387,9 +387,78 @@ def _sec_guidance(symbol, target_period, target_earnings_date):
                 "error":None,
             })
             return out
-    out["error"]="未找到与目标财季严格匹配的官方管理层季度指引"
+    # SEC earnings releases frequently omit verbal CFO guidance. Use a separate
+    # transcript cross-check only after official filing parsing fails. It is
+    # explicitly labeled as third-party evidence and never called official.
+    fallback=_transcript_guidance_fallback(symbol,target_end,target_earnings_date)
+    if fallback:
+        return fallback
+    out["error"]="未找到与目标财季严格匹配的可验证管理层季度指引"
     return out
 
+
+
+def _transcript_guidance_fallback(symbol, target_end=None, target_earnings_date=None):
+    """Cross-check management guidance from a public earnings-call transcript.
+
+    SEC EX-99.1 often contains the earnings release but not the CFO's verbal
+    forward guidance. This fallback is deliberately labeled third-party
+    transcript cross-check and never presented as an SEC/official filing.
+    """
+    s=str(symbol or '').strip().lower()
+    if not s or any(x in s for x in ('.hk','.ss','.sz')):
+        return None
+    slug=s.replace('.','-').replace('/','-')
+    idx_url=f'https://stockanalysis.com/stocks/{slug}/transcripts/'
+    idx,err=_http(idx_url,'text',8)
+    if not idx:
+        return None
+    links=[]
+    for href,label in re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',idx,re.I|re.S):
+        lab=_plain(label)
+        if not re.search(r'Earnings Call:\s*Q\d',lab,re.I):
+            continue
+        full=href if href.startswith('http') else 'https://stockanalysis.com'+href
+        links.append((full,lab))
+    seen=set(); links=[x for x in links if not (x[0] in seen or seen.add(x[0]))][:8]
+    for url,label in links:
+        body,berr=_http(url,'text',8)
+        if not body: continue
+        text=_plain(body)
+        if len(text)<500: continue
+        eps=[x for x in _extract_eps_candidates(text) if _quarter_context_ok(x[2])]
+        rev=[x for x in _extract_revenue_candidates(text) if _quarter_context_ok(x[2])]
+        growth=[x for x in _extract_revenue_growth_candidates(text) if _quarter_context_ok(x[2])]
+        def rank(c):
+            ctx=c[2].lower(); score=0
+            if target_end and _date_mentions_target(ctx,target_end): score+=100
+            if 'next quarter' in ctx: score+=60
+            if any(k in ctx for k in ('guidance','outlook','expects','expect')): score+=25
+            if 'last quarter' in ctx or 'reported' in ctx: score-=20
+            return score
+        eps=sorted(eps,key=rank,reverse=True); rev=sorted(rev,key=rank,reverse=True); growth=sorted(growth,key=rank,reverse=True)
+        e=eps[0] if eps and rank(eps[0])>=25 else None
+        r=rev[0] if rev and rank(rev[0])>=25 else None
+        g=growth[0] if growth and rank(growth[0])>=25 else None
+        if not (e or r or g): continue
+        return {
+            'available':True,
+            'eps_low':e[0] if e else None,'eps_high':e[1] if e else None,
+            'revenue_low':r[0] if r else None,'revenue_high':r[1] if r else None,
+            'revenue_growth_low':g[0] if g else None,'revenue_growth_high':g[1] if g else None,
+            'revenue_growth_basis':'YoY growth guidance' if g else None,
+            'revenue_growth_source_text':g[2] if g else None,
+            'revenue_growth_quantified':_quantify_revenue_growth_guidance(symbol,target_end,g[0],g[1]) if g else None,
+            'filing_date':None,'filing_url':None,'document_url':url,
+            'period_end':target_end,'period_match':'transcript_target_period' if target_end else 'transcript_forward_quarter',
+            'eps_basis':'management disclosed range (transcript)' if e else None,
+            'revenue_basis':'management disclosed range (transcript)' if r else ('AEL quantified from management YoY growth guidance (transcript)' if g else None),
+            'source':'Earnings call transcript · third-party cross-check',
+            'source_type':'transcript_crosscheck',
+            'official_vs_crosscheck':'crosscheck',
+            'error':None,
+        }
+    return None
 
 def _guidance_whisper(consensus, guidance, nowcast, revisions, kind):
     if kind == "eps":
