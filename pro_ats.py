@@ -167,6 +167,95 @@ def _source(symbol):
         return out
 
 
+_HIST_CACHE = {}
+_HIST_LOCK = threading.Lock()
+
+
+def _query_weekly_historic_month(token, month, symbol):
+    """Fetch one historic month and keep only the requested symbol.
+    FINRA's weeklySummaryHistoric intentionally allows only a time filter plus
+    tierIdentifier, so symbol filtering is performed locally. The result is
+    cached; historical data is static after one year.
+    """
+    url = "https://api.finra.org/data/group/OTCMarket/name/weeklySummaryHistoric"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Data-API-Version": "1"}
+    fields = ["issueSymbolIdentifier", "weekStartDate", "summaryTypeCode",
+              "tierIdentifier", "totalWeeklyShareQuantity", "totalWeeklyTradeCount",
+              "initialPublishedDate", "lastReportedDate", "lastUpdateDate"]
+    rows=[]; offset=0; limit=5000
+    while offset <= 500000:
+        payload={"limit":limit,"offset":offset,"fields":fields,"compareFilters":[
+            {"compareType":"equal","fieldName":"tierIdentifier","fieldValue":"T1"},
+            {"compareType":"equal","fieldName":"historicalMonth","fieldValue":month},
+        ]}
+        r=requests.post(url,headers=headers,json=payload,timeout=7)
+        r.raise_for_status()
+        batch=r.json() if r.content else []
+        if not isinstance(batch,list) or not batch: break
+        rows.extend(batch)
+        if len(batch)<limit: break
+        total=int(r.headers.get('Record-Total') or 0)
+        if total and offset+len(batch)>=total: break
+        offset += len(batch)
+        if len(rows)>50000: break
+    sym=str(symbol or '').upper()
+    return [x for x in rows if str(x.get('issueSymbolIdentifier') or '').upper()==sym]
+
+
+def ats_historical_source(symbol, event_dates=None):
+    """Return FINRA ATS/OTC weekly history around supplied event dates.
+    Production weeklySummary covers rolling 12 months; this sidecar adds the
+    official weeklySummaryHistoric four-year dataset without touching current
+    ATS calculations. Only weeks on/before the event are later selected.
+    """
+    sym=str(symbol or '').strip().upper()
+    dates=[]
+    for d in (event_dates or []):
+        try: dates.append(pd.Timestamp(d).normalize())
+        except Exception: pass
+    if not sym or not dates: return []
+    token, auth_mode, err = _token()
+    if not token: return []
+    months=sorted({d.strftime('%Y-%b') for d in dates})
+    out={}
+    def load_month(month):
+        key=(sym,month)
+        with _HIST_LOCK: cached=_HIST_CACHE.get(key)
+        if cached is not None:
+            return month,cached
+        try:
+            rows=_query_weekly_historic_month(token,month,sym)
+        except Exception:
+            rows=[]
+        with _HIST_LOCK: _HIST_CACHE[key]=rows
+        return month,rows
+    # Historical months are independent. Fetch a small bounded batch in
+    # parallel so the fair-backtest does not become a long serial wait.
+    with ThreadPoolExecutor(max_workers=min(6,max(1,len(months)))) as ex:
+        month_results=list(ex.map(load_month,months))
+    for month,cached in month_results:
+        for r in cached:
+            w=r.get('weekStartDate') or r.get('summaryStartDate')
+            if not w: continue
+            k=str(w)
+            b=out.setdefault(k,{"week":k,"ats_shares":0.0,"non_ats_shares":0.0,"ats_trades":0.0,"non_ats_trades":0.0,"published_date":None})
+            code=str(r.get('summaryTypeCode') or '')
+            pub=r.get('initialPublishedDate') or r.get('lastUpdateDate') or r.get('lastReportedDate')
+            if pub and (b.get('published_date') is None or str(pub)>str(b.get('published_date'))): b['published_date']=str(pub)
+            if code=='ATS_W_SMBL':
+                b['ats_shares'] += _finite(r.get('totalWeeklyShareQuantity')) or 0.0
+                b['ats_trades'] += _finite(r.get('totalWeeklyTradeCount')) or 0.0
+            elif code=='OTC_W_SMBL':
+                b['non_ats_shares'] += _finite(r.get('totalWeeklyShareQuantity')) or 0.0
+                b['non_ats_trades'] += _finite(r.get('totalWeeklyTradeCount')) or 0.0
+    result=[]
+    for k,b in sorted(out.items()):
+        total=b['ats_shares']+b['non_ats_shares']
+        if total<=0: continue
+        b['ats_share_pct']=b['ats_shares']/total*100.0
+        result.append(b)
+    return result
+
 def ats_source(symbol):
     """Public sidecar adapter used by pro_guidance_ats."""
     return _source(symbol)
