@@ -62,10 +62,76 @@ body.ael-force-mobile .ael-pro-option-card{width:100%;min-width:0}
 .ael-treasury-hero{display:flex;justify-content:space-between;gap:12px;align-items:center}.ael-pro-treasury-status{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.ael-treasury-plain{font-size:11px;line-height:1.75;color:#9aa7b5;margin-top:8px}.ael-treasury-pressure{display:flex;align-items:baseline;gap:10px;padding:14px;background:#101923;border:1px solid #273545;border-radius:12px}.ael-treasury-pressure b{font-size:24px}.ael-treasury-pressure span{color:#8f9eac;font-size:11px}.ael-treasury-drivers{font-size:11px;line-height:1.7;color:#9aa7b5;margin-top:9px}.ael-treasury-supply-box{display:grid;grid-template-columns:1fr 1fr;gap:8px}.ael-treasury-supply-box>div{background:#101923;border:1px solid #273545;border-radius:10px;padding:10px}.ael-treasury-supply-box span{display:block;color:#91a0af;font-size:10px}.ael-treasury-supply-box b{display:block;margin-top:5px;font-size:17px}.ael-treasury-driver-list{display:grid;gap:7px;font-size:11px;color:#b6c1cc}.ael-treasury-driver-list div{background:#101923;border:1px solid #273545;border-radius:9px;padding:8px}.ael-treasury-table{width:100%;border-collapse:collapse;font-size:11px}.ael-treasury-table th,.ael-treasury-table td{padding:7px;border-bottom:1px solid #273545;text-align:right;white-space:nowrap}.ael-treasury-table th:first-child,.ael-treasury-table td:first-child{text-align:left}.ael-treasury-good{color:#9ee6bd}.ael-treasury-bad{color:#f3a6a6}.ael-treasury-neutral{color:#f4d58a}@media(max-width:760px){.ael-treasury-hero{display:block}.ael-pro-treasury-status{margin-top:10px}.ael-treasury-supply-box{grid-template-columns:1fr 1fr}}
 
 .ael-research-snapshot{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.ael-research-state{background:#101923;border:1px solid #273545;border-radius:10px;padding:10px}.ael-research-state span{display:block;color:#8f9dab;font-size:9px}.ael-research-state b{display:block;margin-top:4px;font-size:14px}.ael-research-state small{display:block;margin-top:3px;color:#7f8d9b;font-size:9px;line-height:1.4}.ael-research-guidance{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}.ael-research-guide{background:#101923;border:1px solid #273545;border-radius:10px;padding:10px;cursor:pointer}.ael-research-guide:active{transform:translateY(1px)}.ael-research-guide b{display:block;font-size:11px;color:#e8edf2}.ael-research-guide span{display:block;margin-top:4px;color:#9aa7b5;font-size:9px;line-height:1.55}.ael-research-guide em{display:inline-block;margin-top:7px;font-style:normal;color:#9ee6bd;font-size:9px}.ael-universe-toolbar{display:grid;grid-template-columns:1fr 120px 110px;gap:7px;margin-bottom:9px}.ael-universe-toolbar input,.ael-universe-toolbar select{width:100%;background:#0f1720;color:#eef2f6;border:1px solid #334155;border-radius:9px;padding:9px;font-size:10px}.ael-universe-table{width:100%;border-collapse:separate;border-spacing:0 5px;font-size:10px}.ael-universe-table th{color:#7f8d9b;font-size:9px;font-weight:700;text-align:left;padding:0 7px}.ael-universe-table td{background:#101923;border-top:1px solid #273545;border-bottom:1px solid #273545;padding:8px 7px}.ael-universe-table td:first-child{border-left:1px solid #273545;border-radius:8px 0 0 8px;font-weight:800}.ael-universe-table td:last-child{border-right:1px solid #273545;border-radius:0 8px 8px 0;text-align:right}.ael-universe-open{border:1px solid #334155;background:#182331;color:#dbe4ec;border-radius:7px;padding:5px 7px;font-size:9px}.ael-universe-count{color:#9aa7b5;font-size:9px;margin-bottom:5px}@media(max-width:760px){.ael-research-snapshot{grid-template-columns:repeat(2,1fr)}.ael-research-guidance{grid-template-columns:1fr}.ael-universe-toolbar{grid-template-columns:1fr 1fr}.ael-universe-toolbar input{grid-column:1/-1}.ael-universe-table th:nth-child(3),.ael-universe-table td:nth-child(3){display:none}}
+
+/* AEL V2.6.12 product UI layer — visual only; core APIs and Pro remain untouched */
+:root{--ael-ink:#111827;--ael-muted:#697386;--ael-line:#e7eaf0;--ael-soft:#f6f8fb;--ael-card:#ffffff;--ael-accent:#111827;--ael-shadow:0 12px 34px rgba(17,24,39,.06)}
+body{background:#f5f7fa;color:var(--ael-ink);letter-spacing:-.01em}
+.ael-modebar{max-width:1120px!important;padding:12px 20px!important;background:rgba(245,247,250,.88)!important;border-bottom:1px solid rgba(231,234,240,.72);backdrop-filter:blur(18px)!important}
+.ael-brand{font-size:21px!important;letter-spacing:.14em!important;font-weight:900!important}
+.ael-mode-switch{background:#e9edf2!important;border:1px solid #e1e5eb!important;padding:3px!important;border-radius:11px!important}
+.ael-mode-switch button{border-radius:8px!important;font-weight:750!important}
+.ael-mode-switch button.active{box-shadow:0 2px 8px rgba(17,24,39,.10)!important}
+#ael-lite-root .wrap{max-width:1120px;padding:22px 20px 52px}
+.ael-lite-hero{margin-top:4px;margin-bottom:14px}
+.ael-hero-top{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;padding:8px 2px 18px}
+.ael-eyebrow{font-size:11px;font-weight:850;letter-spacing:.16em;color:#7a8494;display:flex;align-items:center;gap:7px}
+.ael-live-dot{width:7px;height:7px;border-radius:50%;background:#16a34a;box-shadow:0 0 0 4px rgba(22,163,74,.09)}
+.ael-hero-top h1{font-size:clamp(29px,4vw,42px);line-height:1.1;letter-spacing:-.045em;margin:10px 0 8px;font-weight:900}
+.ael-hero-sub{font-size:14px;color:#697386}
+.ael-hero-badge{padding:8px 11px;border:1px solid #e1e5eb;background:#fff;border-radius:999px;font-size:11px;font-weight:800;white-space:nowrap;box-shadow:0 4px 14px rgba(17,24,39,.04)}
+.ael-search-panel{background:linear-gradient(135deg,#fff 0%,#fbfcfe 100%);border:1px solid #e4e8ee;border-radius:20px;padding:17px;box-shadow:var(--ael-shadow)}
+.ael-search-label{font-size:12px;font-weight:800;margin:0 0 8px;color:#303846}
+#ael-lite-root .search{gap:10px}
+#ael-lite-root .search input{height:52px;border:1px solid #dce1e8;border-radius:14px;padding:0 15px;font-size:15px;box-shadow:inset 0 1px 2px rgba(17,24,39,.025);outline:none;transition:border-color .15s,box-shadow .15s}
+#ael-lite-root .search input:focus{border-color:#9aa4b2;box-shadow:0 0 0 4px rgba(17,24,39,.055)}
+#ael-lite-root .search button{min-width:86px;height:52px;border-radius:14px;background:#111827;font-weight:800;display:flex;align-items:center;justify-content:center;gap:9px;transition:transform .12s,box-shadow .12s}
+#ael-lite-root .search button:active{transform:translateY(1px)}
+.ael-search-arrow{font-size:17px;line-height:1}
+.ael-search-hints{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:#8a94a3}
+.ael-search-hints button{border:1px solid #e3e7ed;background:#fff;color:#4b5563;border-radius:999px;padding:5px 9px;font-size:11px;cursor:pointer}
+.ael-search-hints button:hover{border-color:#cbd2dc;color:#111827}
+.ael-hero-principles{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:10px}
+.ael-hero-principles>div{padding:10px 12px;background:#fff;border:1px solid #e8ebf0;border-radius:13px}
+.ael-hero-principles b{display:block;font-size:12px;margin-bottom:3px}
+.ael-hero-principles span{display:block;color:#7b8492;font-size:10px}
+#ael-lite-root .status{color:#7a8492}
+#ael-lite-root .card{border-color:#e6eaf0;border-radius:18px;box-shadow:0 5px 20px rgba(17,24,39,.045);padding:17px;margin-top:13px}
+#ael-lite-root .section{font-size:15px;font-weight:850;letter-spacing:-.02em}
+#ael-lite-root .metric{background:#fbfcfd;border-color:#edf0f4;border-radius:13px;transition:transform .15s,box-shadow .15s}
+#ael-lite-root .metric:hover{transform:translateY(-1px);box-shadow:0 5px 16px rgba(17,24,39,.05)}
+#ael-lite-root .metric b{font-size:21px;letter-spacing:-.03em}
+#ael-lite-root .grid{gap:10px}
+#ael-lite-root .company-card{background:linear-gradient(135deg,#fff 0%,#f9fbfd 100%);border-color:#dde3ea;box-shadow:0 10px 28px rgba(17,24,39,.065)}
+#ael-lite-root .company h2{font-size:22px;letter-spacing:-.025em}
+#ael-lite-root .company-card .logo-sm,.company-card .logo-fallback{width:46px;height:46px;flex-basis:46px;border-radius:13px}
+#ael-lite-root .company-card b{font-size:23px;letter-spacing:-.03em}
+#ael-lite-root .scan-btn{background:#111827;border-radius:11px;box-shadow:0 4px 12px rgba(17,24,39,.12)}
+#ael-lite-root .scan-market{border-color:#e7ebf0;border-radius:14px}
+#ael-lite-root .scan-filter{border-color:#dfe4ea;color:#4b5563;background:#fff}
+#ael-lite-root .scan-filter.active{background:#111827;border-color:#111827;color:#fff}
+#ael-lite-root .scan-score{background:#f7f8fa;border:1px solid #eef1f4}
+#ael-lite-root .scan-row{padding:12px 0}
+#ael-lite-root .candidate-box{border-color:#e0e5eb;border-radius:15px;box-shadow:0 18px 42px rgba(17,24,39,.12)}
+#ael-lite-root .candidate{padding:11px 13px}
+@media(max-width:600px){#ael-lite-root .wrap{padding:15px 12px 42px}.ael-hero-top{padding-top:3px}.ael-hero-top h1{font-size:30px}.ael-hero-sub{font-size:12px}.ael-hero-badge{display:none}.ael-search-panel{padding:13px;border-radius:16px}.ael-hero-principles{grid-template-columns:1fr;gap:7px}.ael-hero-principles>div{padding:9px 11px}.ael-hero-principles>div:nth-child(3){display:none}#ael-lite-root .search input{height:49px;font-size:14px}#ael-lite-root .search button{height:49px;min-width:72px}.ael-search-hints{gap:5px}.ael-search-hints button{padding:5px 8px}.ael-live-dot{width:6px;height:6px}}
 </style>
 </head><body><div class="ael-modebar"><div class="ael-brand">AEL</div><div class="ael-mode-switch"><button id="modeLite" class="active" onclick="setAELMode('lite')">Lite</button><button id="modePro" onclick="setAELMode('pro')">Pro</button></div></div><div id="ael-lite-root"><div class="wrap">
-<h1>AEL｜股票基本面驾驶舱</h1><div class="sub">美股 · 港股 · A股 · 商品 · 加密资产｜AEL设计版权 © 所有</div>
-<div class="search-wrap"><div class="search"><input id="symbol" autocomplete="off" placeholder="搜索股票 / ETF / 指数 / 黄金 / 比特币 / 原油 / 代码" value="AAPL"><button onclick="runPrimarySearch()">查询</button></div><div id="candidateBox" class="candidate-box" aria-live="polite"></div></div>
+<section class="ael-lite-hero">
+  <div class="ael-hero-top">
+    <div>
+      <div class="ael-eyebrow"><span class="ael-live-dot"></span>AEL · FUNDAMENTAL RESEARCH</div>
+      <h1>看懂一只股票，先看 AEL</h1>
+      <div class="ael-hero-sub">美股 · 港股 · A股　｜　基本面 · 估值 · 技术 · 市场扫描</div>
+    </div>
+    <div class="ael-hero-badge">免费核心分析</div>
+  </div>
+  <div class="ael-search-panel">
+    <div class="ael-search-label">搜索股票</div>
+    <div class="search-wrap"><div class="search"><input id="symbol" autocomplete="off" placeholder="输入代码、公司名或中文名，例如 AAPL / 英伟达 / 腾讯" value="AAPL"><button onclick="runPrimarySearch()"><span>查询</span><span class="ael-search-arrow">→</span></button></div><div id="candidateBox" class="candidate-box" aria-live="polite"></div></div>
+    <div class="ael-search-hints"><span>热门</span><button type="button" onclick="document.getElementById('symbol').value='NVDA';runPrimarySearch()">NVDA</button><button type="button" onclick="document.getElementById('symbol').value='AAPL';runPrimarySearch()">AAPL</button><button type="button" onclick="document.getElementById('symbol').value='0700.HK';runPrimarySearch()">腾讯</button><button type="button" onclick="document.getElementById('symbol').value='600519.SS';runPrimarySearch()">贵州茅台</button></div>
+  </div>
+  <div class="ael-hero-principles"><div><b>数据真实</b><span>缺失就显示暂无数据</span></div><div><b>一眼看懂</b><span>专业方法，简单表达</span></div><div><b>覆盖三大市场</b><span>美股 · 港股 · A股</span></div></div>
+</section>
 <div id="status" class="status">输入股票代码后查询</div>
 <div class="card" id="market-scan-card"><div class="scan-head"><div><div class="section" style="margin-bottom:3px">🔭 AEL MARKET SCAN</div><div class="muted">主动发起｜全市场分板块扫描｜后台运行，不阻塞单股查询</div></div><div class="scan-actions"><button id="scanCancelBtn" class="scan-cancel" onclick="cancelMarketScan()">取消</button><button id="scanRefreshBtn" class="scan-filter" style="display:none" onclick="runMarketScan(true)">刷新</button><button id="scanBtn" class="scan-btn" onclick="runMarketScan(false)">开始扫描</button></div></div><div class="scan-filters"><button class="scan-filter active" data-market="us" onclick="toggleScanMarket(this)">美股</button><button class="scan-filter" data-market="hk" onclick="toggleScanMarket(this)">港股</button><button class="scan-filter" data-market="cn" onclick="toggleScanMarket(this)">A股</button></div><div class="muted" style="margin:6px 0 0 4px">美股：道琼斯 + 纳斯达克100 + 标普500｜港股：恒生指数｜A股：中证500 + 科创板</div><div class="scan-filters" style="margin-top:7px"><span class="muted" style="padding:8px 4px;font-weight:700">板块</span><div id="scanGroup" class="scan-group-buttons"><button class="scan-filter active" data-group="all" onclick="toggleScanGroup(this)">核心指数池</button><button class="scan-filter" data-group="semiconductors" onclick="toggleScanGroup(this)">半导体</button><button class="scan-filter" data-group="semiconductor_equipment" onclick="toggleScanGroup(this)">半导体设备</button><button class="scan-filter" data-group="software" onclick="toggleScanGroup(this)">软件</button><button class="scan-filter" data-group="banks" onclick="toggleScanGroup(this)">银行</button><button class="scan-filter" data-group="insurance" onclick="toggleScanGroup(this)">保险</button><button class="scan-filter" data-group="biotechnology" onclick="toggleScanGroup(this)">生物科技</button><button class="scan-filter" data-group="pharmaceuticals" onclick="toggleScanGroup(this)">制药</button></div></div><div id="scanStatus" class="status">默认扫描美股核心指数成分股；点击开始后运行。可切换港股恒生指数、A股中证500＋科创板。</div><div id="scanProgress"></div><div id="scanResults"></div></div>
 <div id="app"></div></div></div>
