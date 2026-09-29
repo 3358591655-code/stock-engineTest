@@ -153,7 +153,7 @@ def _classify(question: str):
     return None
 
 
-def _clean_market(m, symbol):
+def _clean_market(m, symbol, query_specific=False):
     q = _market_question(m)
     context_text = " ".join(str(m.get(k) or "") for k in ("event_title", "event_subtitle", "event_description", "event_category", "event_subcategory", "slug", "ticker"))
     combined = (q + " " + context_text).strip()
@@ -161,7 +161,7 @@ def _clean_market(m, symbol):
     # actually reference the requested ticker, while allowing ticker-bearing
     # event metadata to identify child threshold markets.
     symbol_re = re.compile(r"(?<![A-Z0-9])" + re.escape(symbol) + r"(?![A-Z0-9])", re.I)
-    if not symbol_re.search(combined):
+    if not symbol_re.search(combined) and not query_specific:
         return None
     metric = _classify(combined)
     if not metric:
@@ -183,18 +183,63 @@ def _clean_market(m, symbol):
     }
 
 def _query(symbol, query):
+    """Use the same public-search contract that the working macro module uses.
+
+    The previous implementation passed optional/legacy search parameters. A
+    rejected parameter caused the exception to be swallowed and the stock card
+    silently became ``暂无数据``. Macro works because it uses the minimal public
+    search contract. Keep this sidecar aligned with that contract.
+    """
     try:
         raw = _get(f"{BASE}/public-search", {
             "q": query,
             "events_status": "active",
-            "keep_closed_markets": 0,
             "limit_per_type": 50,
-            "search_tags": "true",
-            "optimized": "true",
+            "page": 1,
+            "search_profiles": "false",
         })
-        return _flatten_markets(raw)
+        rows = _flatten_markets(raw)
+        rows.extend(_event_markets(raw))
+        # Gamma /markets supports full-text q as a second discovery path. It is
+        # useful when public-search returns a parent event but not its children.
+        if not rows:
+            try:
+                market_raw = _get(f"{BASE}/markets", {
+                    "q": query, "active": "true", "closed": "false", "limit": 100,
+                })
+                if isinstance(market_raw, list):
+                    rows.extend(market_raw)
+                elif isinstance(market_raw, dict):
+                    rows.extend(market_raw.get("markets") or market_raw.get("data") or [])
+            except Exception:
+                pass
+        return rows
     except Exception:
         return []
+
+
+def _event_markets(raw):
+    """Flatten search response with event context, without requiring ticker text
+    to be repeated in every child market.
+    """
+    out=[]
+    if not isinstance(raw, dict):
+        return out
+    events=raw.get('events') or []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        ctx={f"event_{k}":event.get(k) for k in ('title','subtitle','description','ticker','category','subcategory') if event.get(k)}
+        for m in event.get('markets') or []:
+            if isinstance(m, dict):
+                x=dict(m)
+                x.update({k:v for k,v in ctx.items() if k not in x})
+                x['_query_event_match']=True
+                out.append(x)
+    for m in raw.get('markets') or []:
+        if isinstance(m, dict):
+            x=dict(m); x['_query_event_match']=True; out.append(x)
+    return out
 
 def _infer(metric_rows):
     rows = [x for x in metric_rows if x.get("threshold") is not None and x.get("yes_probability") is not None]
@@ -235,6 +280,20 @@ def _infer(metric_rows):
     }
 
 
+_ALIASES = {
+    "AAPL": ["Apple", "Apple Inc"], "MSFT": ["Microsoft"], "NVDA": ["NVIDIA", "Nvidia"],
+    "AMZN": ["Amazon"], "META": ["Meta", "Facebook"], "GOOGL": ["Google", "Alphabet"], "GOOG": ["Google", "Alphabet"],
+    "TSLA": ["Tesla"], "AVGO": ["Broadcom"], "NFLX": ["Netflix"], "MU": ["Micron"], "AMD": ["AMD", "Advanced Micro Devices"],
+    "COST": ["Costco"], "ADBE": ["Adobe"], "PEP": ["PepsiCo"], "CSCO": ["Cisco"], "CMCSA": ["Comcast"],
+    "INTC": ["Intel"], "QCOM": ["Qualcomm"], "TXN": ["Texas Instruments"], "AMAT": ["Applied Materials"],
+    "INTU": ["Intuit"], "ISRG": ["Intuitive Surgical"], "BKNG": ["Booking"], "ADP": ["ADP", "Automatic Data Processing"],
+    "GILD": ["Gilead"], "PANW": ["Palo Alto Networks"], "VRTX": ["Vertex"], "LRCX": ["Lam Research"],
+    "REGN": ["Regeneron"], "HON": ["Honeywell"], "AMGN": ["Amgen"], "SBUX": ["Starbucks"], "MDLZ": ["Mondelez"],
+    "ADI": ["Analog Devices"], "MELI": ["MercadoLibre"], "PDD": ["PDD", "Pinduoduo"], "CRWD": ["CrowdStrike"],
+    "KLAC": ["KLA", "KLA Corporation"], "SNPS": ["Synopsys"], "CDNS": ["Cadence"], "MRVL": ["Marvell"],
+    "CEG": ["Constellation Energy"], "MAR": ["Marriott"], "ORLY": ["O'Reilly"], "CTAS": ["Cintas"],
+}
+
 def analyze_polymarket(symbol: str) -> dict[str, Any]:
     symbol = str(symbol or "").strip().upper()
     with _LOCK:
@@ -246,8 +305,10 @@ def analyze_polymarket(symbol: str) -> dict[str, Any]:
     # One small public-search request is intentional: this module is a UI sidecar,
     # so a slow prediction-market endpoint must never become page latency.
     queries = [symbol, f"{symbol} earnings", f"{symbol} revenue", f"{symbol} EPS"]
+    queries += [f"{a} earnings" for a in _ALIASES.get(symbol, [])]
     markets = []
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    queries = list(dict.fromkeys(queries))[:8]
+    with ThreadPoolExecutor(max_workers=min(6, len(queries) or 1)) as ex:
         futures = [ex.submit(_query, symbol, q) for q in queries]
         for fut in as_completed(futures):
             try:
@@ -260,10 +321,10 @@ def analyze_polymarket(symbol: str) -> dict[str, Any]:
     for m in markets:
         if not isinstance(m, dict) or not _active(m):
             continue
-        x = _clean_market(m, symbol)
+        x = _clean_market(m, symbol, query_specific=True)
         if not x:
             continue
-        key = (x["question"], x.get("metric"))
+        key = (x["question"], x.get("metric"), None if x.get("threshold") is None else round(float(x["threshold"]), 8))
         if key in seen:
             continue
         seen.add(key)
