@@ -138,7 +138,7 @@ body{background:#f5f7fa;color:var(--ael-ink);letter-spacing:-.01em}
 .ael-cockpit-poly-compact b{display:block;margin-top:3px;font-size:12px}
 .ael-cockpit-poly-details{margin-top:8px;border:1px solid #273545;border-radius:10px;background:#101923;padding:8px 9px}
 .ael-cockpit-poly-details>summary{cursor:pointer;display:flex;justify-content:space-between;gap:8px;color:#dce4eb;font-size:10px;font-weight:800;list-style:none}
-.ael-cockpit-poly-details>summary::-webkit-details-marker{display:none}
+.ael-cockpit-poly-details>summary::-webkit-details-marker{display:none}.ael-cockpit-poly-details:not([open]) .ael-cockpit-poly-groups,.ael-cockpit-poly-details:not([open]) .ael-cockpit-poly-list{display:none}
 .ael-cockpit-poly-groups{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
 .ael-cockpit-poly-group{padding:4px 6px;border-radius:999px;background:#172534;color:#aebdca;font-size:9px}
 .ael-cockpit-poly-list{display:grid;gap:6px;margin-top:8px;max-height:420px;overflow:auto;-webkit-overflow-scrolling:touch}
@@ -975,23 +975,43 @@ function renderCockpitAccuracy(d){
  const st=document.getElementById('cockpitCompareStatus');if(st){st.textContent=n?'AEL / ATS 已回测':'样本不足';st.className='ael-pro-status-pill'+(n?' ok':'');}
 }
 function polyZhText(raw,category){
- const s=String(raw||'').trim(); if(!s)return '暂无市场问题';
+ const s=String(raw||'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+ if(!s)return '暂无市场问题';
+ const ticker=(s.match(/\(([A-Z]{1,6})\)/)||s.match(/\b([A-Z]{1,6})\b/))?.[1]||'';
+ const monthMap={January:'1月',February:'2月',March:'3月',April:'4月',May:'5月',June:'6月',July:'7月',August:'8月',September:'9月',October:'10月',November:'11月',December:'12月'};
  let z=s;
- const reps=[
-  [/^Will\s+/i,''], [/<\/?[^>]+>/g,''], [/\bBeat Earnings\b/ig,'财报超预期'], [/above consensus/ig,'高于一致预期'], [/earnings/ig,'财报'], [/revenue/ig,'营收'],
-  [/EPS/ig,'每股收益'], [/price/ig,'价格'], [/hit/ig,'触及'], [/reach/ig,'达到'], [/dip to/ig,'跌至'], [/fall to/ig,'跌至'],
-  [/close above/ig,'收盘高于'], [/close below/ig,'收盘低于'], [/above/ig,'高于'], [/below/ig,'低于'], [/over/ig,'高于'], [/under/ig,'低于'],
-  [/trade at/ig,'交易于'], [/in September/ig,'在9月'], [/in October/ig,'在10月'], [/September/ig,'9月'], [/October/ig,'10月'], [/November/ig,'11月'], [/December/ig,'12月'],
-  [/January/ig,'1月'], [/February/ig,'2月'], [/March/ig,'3月'], [/April/ig,'4月'], [/May/ig,'5月'], [/June/ig,'6月'], [/July/ig,'7月'], [/August/ig,'8月']
- ];
- reps.forEach(([re,v])=>z=z.replace(re,v));
+ Object.entries(monthMap).forEach(([en,zh])=>{z=z.replace(new RegExp('\\b'+en+'\\b','ig'),zh)});
+ z=z.replace(/Will\s+/ig,'').replace(/What will\s+/ig,'').replace(/Apple\s*\(AAPL\)/ig,'AAPL').replace(/\bApple\b/ig,ticker==='AAPL'?'AAPL':'');
+ z=z.replace(/Microsoft\s*\(MSFT\)/ig,'MSFT').replace(/NVIDIA\s*\(NVDA\)/ig,'NVDA');
+ z=z.replace(/\b(?:in|on)\s+(\d{1,2})\s+September\b/ig,'$1日9月');
+ z=z.replace(/\b(?:in|on)\s+(\d{1,2})\s+(\d{1,2})?\s*月\b/ig,'$1日');
+ z=z.replace(/\b(above|over|greater than|at least|exceed)\b/ig,'高于');
+ z=z.replace(/\b(below|under|less than)\b/ig,'低于');
+ z=z.replace(/\bclose above\b/ig,'收盘高于').replace(/\bclose below\b/ig,'收盘低于');
+ z=z.replace(/\bcloses above\b/ig,'收盘高于').replace(/\bcloses below\b/ig,'收盘低于');
+ z=z.replace(/\bhit\s*\(LOW\)/ig,'跌至').replace(/\bhit\s*\(HIGH\)/ig,'涨至').replace(/\bhit\b/ig,'触及');
+ z=z.replace(/\bup or down\b/ig,'上涨还是下跌').replace(/\bUp or Down\b/ig,'上涨还是下跌');
+ z=z.replace(/\bfinish week\b/ig,'周收盘').replace(/\bfinish\b/ig,'收盘');
+ z=z.replace(/\bweek of\b/ig,'当周').replace(/\bdaily\b/ig,'每日');
+ z=z.replace(/\bBeat Earnings\b/ig,'财报超预期').replace(/\babove consensus\b/ig,'高于一致预期').replace(/\bearnings\b/ig,'财报').replace(/\brevenue\b/ig,'营收').replace(/\bsales\b/ig,'销售额').replace(/\bEPS\b/ig,'每股收益');
+ z=z.replace(/\bprice\b/ig,'价格').replace(/\bstock\b/ig,'股价').replace(/\btrade at\b/ig,'交易于').replace(/\breach\b/ig,'达到').replace(/\bdip to\b/ig,'跌至').replace(/\bfall to\b/ig,'跌至');
  z=z.replace(/\b(yes|no)\b/ig,m=>/^yes$/i.test(m)?'是':'否');
- z=z.replace(/\$\s*(\d+(?:\.\d+)?)/g,'$1 美元').replace(/\b(\d+(?:\.\d+)?)\s*(?:bn|billion|B)\b/gi,'$1 十亿美元');
- z=z.replace(/\s+/g,' ').replace(/^[:：\-\s]+/,'').trim();
+ z=z.replace(/\$\s*(\d+(?:\.\d+)?)/g,'$1美元').replace(/\b(\d+(?:\.\d+)?)\s*(?:bn|billion|B)\b/gi,'$1十亿美元');
+ z=z.replace(/\([^)]*\)/g,'').replace(/\s+/g,' ').replace(/^[:：\-\s]+/,'').trim();
+ // If the original is a price market, normalize the common Polymarket templates
+ // to a compact Chinese title instead of leaking English source wording into AEL.
+ if(category==='price'){
+   const priceMatch=z.match(/(\d+(?:\.\d+)?)美元/);
+   const month=(z.match(/(\d{1,2}月)/)||[])[1]||'';
+   if(/上涨还是下跌/.test(z)) return `${ticker||'该股'} ${month}涨跌概率`.trim();
+   if(/跌至/.test(z) && priceMatch) return `${ticker||'该股'} ${month}跌至${priceMatch[1]}美元`.trim();
+   if(/涨至/.test(z) && priceMatch) return `${ticker||'该股'} ${month}涨至${priceMatch[1]}美元`.trim();
+   if(/收盘高于/.test(z) && priceMatch) return `${ticker||'该股'} ${month}收盘高于${priceMatch[1]}美元`.trim();
+   if(/收盘低于/.test(z) && priceMatch) return `${ticker||'该股'} ${month}收盘低于${priceMatch[1]}美元`.trim();
+ }
  if(category==='earnings' && !/财报/.test(z))z='财报：'+z;
- if(category==='eps' && !/每股收益|EPS/.test(z))z='每股收益：'+z;
+ if(category==='eps' && !/每股收益/.test(z))z='每股收益：'+z;
  if(category==='revenue' && !/营收/.test(z))z='营收：'+z;
- if(category==='price' && !/价格|触及|高于|低于|达到|收盘/.test(z))z='股价：'+z;
  return z||'暂无市场问题';
 }
 function polyOutcomeZh(raw){const s=String(raw||'').trim();if(!s)return'暂无数据';if(/^yes$/i.test(s))return'是';if(/^no$/i.test(s))return'否';return polyZhText(s,'other')}
@@ -1000,17 +1020,24 @@ function polyFmtCompact(v){return v==null||!Number.isFinite(Number(v))?'—':Num
 function polyCategoryLabel(c){return({earnings:'财报',eps:'EPS',revenue:'营收',price:'股价',other:'其他'})[c]||'其他'}
 function renderCockpitPoly(d){
  const beat=d?.beat_probability,rev=d?.revenue||{},eps=d?.eps||{},markets=Array.isArray(d?.markets)?d.markets:[];
- cockpitSet('cockPolyRev',rev.available&&rev.implicit_median!=null?cockpitMoney(rev.implicit_median):'证据不足');cockpitSet('cockPolyEps',eps.available&&eps.implicit_median!=null?cockpitMoney(eps.implicit_median,3):'证据不足');
- const beatEl=document.getElementById('cockPolyBeat');if(beatEl)beatEl.textContent=beat!=null?`财报超预期 ${polyFmtProbability(beat)}`:(markets.length?`已发现 ${markets.length} 个相关市场`:'当前无可验证市场');
+ cockpitSet('cockPolyRev',rev.available&&rev.implicit_median!=null?cockpitMoney(rev.implicit_median):'证据不足');
+ cockpitSet('cockPolyEps',eps.available&&eps.implicit_median!=null?cockpitMoney(eps.implicit_median,3):'证据不足');
+ const beatEl=document.getElementById('cockPolyBeat');
+ if(beatEl)beatEl.textContent=beat!=null?`财报超预期 ${polyFmtProbability(beat)}`:(markets.length?`已发现 ${markets.length} 个相关市场`:'证据不足');
  const pa=document.getElementById('cockPolyAttention');if(pa)pa.textContent=markets.length?`${markets.length} 个相关市场`:'暂无可验证市场';
- const list=document.getElementById('cockPolyMarkets');if(!list)return;if(!markets.length){list.innerHTML='<div class="ael-pro-note">当前没有找到可验证的、与该股票直接相关的活跃 Polymarket 市场。</div>';return;}
- const counts={earnings:0,eps:0,revenue:0,price:0,other:0};markets.forEach(m=>{counts[m.category]=Number(counts[m.category]||0)+1;});
- const top=`<div class="ael-cockpit-poly-compact"><div><span>财报</span><b>${counts.earnings||0} 个</b></div><div><span>EPS</span><b>${counts.eps||0} 个</b></div><div><span>营收</span><b>${counts.revenue||0} 个</b></div><div><span>股价</span><b>${counts.price||0} 个</b></div></div>`;
- const groups=['earnings','eps','revenue','price','other'].filter(k=>counts[k]);const groupHtml=groups.map(k=>`<span class="ael-cockpit-poly-group">${polyCategoryLabel(k)} ${counts[k]}</span>`).join('');
- const rows=markets.map(m=>{const outs=Array.isArray(m.outcomes)?m.outcomes:[],probs=outs.map(o=>`<span class="ael-cockpit-poly-out">${esc(polyOutcomeZh(o.outcome))} ${polyFmtProbability(o.probability)}</span>`).join(''),href=m.url?` · <a href="${esc(m.url)}" target="_blank" rel="noopener">查看</a>`:'';return `<div class="ael-cockpit-poly-row"><div class="ael-cockpit-poly-title"><span class="ael-cockpit-poly-type">${esc(polyCategoryLabel(m.category))}</span>${esc(polyZhText(m.question||m.event_title,m.category))}</div><div class="ael-cockpit-poly-outs">${probs||'<span class="ael-cockpit-poly-out">暂无概率</span>'}</div><div class="ael-cockpit-poly-meta">流动性 ${polyFmtCompact(m.liquidity)} · 成交 ${polyFmtCompact(m.volume)}${href}</div></div>`}).join('');
- list.innerHTML=`${top}<details class="ael-cockpit-poly-details"><summary><span>全部相关市场</span><span>${markets.length} 个 · 默认折叠</span></summary><div class="ael-cockpit-poly-groups">${groupHtml}</div><div class="ael-cockpit-poly-list">${rows}</div></details>`;
+ const list=document.getElementById('cockPolyMarkets');if(!list)return;
+ if(!markets.length){list.innerHTML='<div class="ael-pro-note">当前没有找到可验证的、与该股票直接相关的活跃 Polymarket 市场。</div>';return;}
+ const counts={earnings:0,eps:0,revenue:0,price:0,other:0};markets.forEach(m=>{const k=counts[m.category]!=null?m.category:'other';counts[k]+=1;});
+ const top=`<div class="ael-cockpit-poly-compact"><div><span>财报</span><b>${counts.earnings} 个</b></div><div><span>EPS</span><b>${counts.eps} 个</b></div><div><span>营收</span><b>${counts.revenue} 个</b></div><div><span>股价</span><b>${counts.price} 个</b></div></div>`;
+ const rows=markets.map(m=>{
+   const outs=Array.isArray(m.outcomes)?m.outcomes:[];
+   const probs=outs.map(o=>`<span class="ael-cockpit-poly-out">${esc(polyOutcomeZh(o.outcome))} ${polyFmtProbability(o.probability)}</span>`).join('');
+   const href=m.url?` · <a href="${esc(m.url)}" target="_blank" rel="noopener">查看市场</a>`:'';
+   return `<div class="ael-cockpit-poly-row"><div class="ael-cockpit-poly-title"><span class="ael-cockpit-poly-type">${esc(polyCategoryLabel(m.category))}</span>${esc(polyZhText(m.question||m.event_title,m.category))}</div><div class="ael-cockpit-poly-outs">${probs||'<span class="ael-cockpit-poly-out">暂无概率</span>'}</div><div class="ael-cockpit-poly-meta">流动性 ${polyFmtCompact(m.liquidity)} · 成交 ${polyFmtCompact(m.volume)}${href}</div></div>`;
+ }).join('');
+ const groups=['earnings','eps','revenue','price','other'].filter(k=>counts[k]).map(k=>`<span class="ael-cockpit-poly-group">${polyCategoryLabel(k)} ${counts[k]}</span>`).join('');
+ list.innerHTML=`${top}<details class="ael-cockpit-poly-details"><summary><span>全部相关市场</span><span>${markets.length} 个 · 点击展开</span></summary><div class="ael-cockpit-poly-groups">${groups}</div><div class="ael-cockpit-poly-list">${rows}</div></details>`;
 }
-
 function renderCockpitTechnical(x){
  const box=document.getElementById('aelCockpitTechnical');if(!box)return;const status=document.getElementById('cockpitTechStatus');const t=x?.technical||{},r=t.resonance||{},support=r.support?.[0]?.price,resistance=r.resistance?.[0]?.price;
  const f=(v,d=0)=>v==null||!Number.isFinite(Number(v))?'暂无数据':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:d});
@@ -1021,7 +1048,7 @@ function cockpitSyncSymbol(s){const i=document.getElementById('expectationSymbol
 let cockpitRunSeq=0;
 async function runAELCockpit(){
  const raw=(document.getElementById('cockpitSymbol')?.value||'').trim();const item=resolveSearchItem(raw);const s=(item?.symbol||raw).toUpperCase();if(!s)return;const runId=++cockpitRunSeq;
- const hint=document.getElementById('cockpitSearchHint');if(hint)hint.textContent='正在读取核心结果；Polymarket、ATS、回测后台独立加载。';cockpitSyncSymbol(s);document.getElementById('cockpitAelStatus')?.classList.remove('ok');
+ const hint=document.getElementById('cockpitSearchHint');if(hint)hint.textContent='正在读取核心结果；Polymarket、ATS、回测后台独立加载，不阻塞首屏。';cockpitSyncSymbol(s);document.getElementById('cockpitAelStatus')?.classList.remove('ok');
  ['cockSellRev','cockSellEps','cockWhisperRev','cockWhisperEps','cockImpliedRev','cockImpliedEps','cockGuidanceRev','cockGuidanceEps','cockAelPriceRev','cockAelPriceEps','cockAtsPriceRev','cockAtsPriceEps','cockPolyRev','cockPolyEps'].forEach(id=>cockpitSet(id,'加载中…'));
  const tech=document.getElementById('aelCockpitTechnical');if(tech)tech.innerHTML='<div class="ael-cockpit-tech-item"><span>性价比评分</span><b>加载中…</b><small>Lite原值</small></div><div class="ael-cockpit-tech-item"><span>技术强度</span><b>加载中…</b><small>Lite原值</small></div><div class="ael-cockpit-tech-item"><span>综合评分</span><b>加载中…</b><small>Lite原值</small></div><div class="ael-cockpit-tech-item"><span>共振压力/支撑</span><b>加载中…</b><small>Lite原值</small></div>';
  const core=document.getElementById('aelCockpitFundamentals');if(core)core.innerHTML='<div class="ael-cockpit-loading">正在读取核心基本面……</div>';const acc=document.getElementById('aelCockpitAccuracy');if(acc)acc.innerHTML='<div class="ael-cockpit-loading">AEL / ATS 回测随后加载……</div>';
