@@ -298,12 +298,28 @@ function renderCockpitAccuracy(d){
  const st=document.getElementById('cockpitCompareStatus');if(st){st.textContent=n?'AEL / ATS 已回测':'样本不足';st.className='ael-pro-status-pill'+(n?' ok':'');}
 }
 function renderCockpitPoly(d){
- const eRev=document.getElementById('cockPolyRev'),eEps=document.getElementById('cockPolyEps'),beat=document.getElementById('cockPolyBeat');
  const rev=d?.revenue||{},eps=d?.eps||{};
+ const earnings=d?.markets||[], prices=d?.stock_price_markets||[];
  cockpitSet('cockPolyRev',rev.available&&rev.implicit_median!=null?cockpitMoney(rev.implicit_median):'暂无数据');
  cockpitSet('cockPolyEps',eps.available&&eps.implicit_median!=null?cockpitMoney(eps.implicit_median,3):'暂无数据');
- if(beat)beat.textContent=d?.beat_probability!=null?`链上美股预期 · 超预期概率 ${Number(d.beat_probability*100).toFixed(0)}%`:'Polymarket · 链上预测市场';
- const pa=document.getElementById('cockPolyAttention');if(pa)pa.textContent=d?.available?`${(d.markets||[]).length} 个相关市场`:'暂无可验证财报市场';
+ const beat=document.getElementById('cockPolyBeat');
+ const marketBox=document.getElementById('cockPolyMarkets');
+ if(beat){
+   const b=d?.beat_probability!=null?`超预期概率 ${Number(d.beat_probability*100).toFixed(0)}%`:'';
+   const status=rev.available||eps.available?'链上财报预期':(earnings.length?'链上财报概率':'链上股票预期');
+   beat.textContent=`Polymarket · ${status}${b?' · '+b:''}`;
+ }
+ const rows=[...earnings,...prices];
+ const fmtP=v=>v==null?'暂无数据':`${Number(v*100).toFixed(0)}%`;
+ const lines=rows.slice(0,10).map(x=>{
+    const p=x.yes_probability!=null?`YES ${fmtP(x.yes_probability)}`:'';
+    const t=x.threshold!=null?(x.market_type==='stock_price'?` · $${Number(x.threshold).toFixed(2)}`:''):'';
+    const type=x.market_type==='stock_price'?'股票价格':'财报';
+    return `<div style="display:flex;justify-content:space-between;gap:8px"><span>${esc(type)} · ${esc(x.question||'')}</span><b>${p}${t}</b></div>`;
+ }).join('');
+ if(marketBox)marketBox.innerHTML=rows.length?`<div style="display:grid;gap:5px">${lines}</div><div class="ael-pro-note" style="margin-top:6px">${esc(d?.reason||'')}</div>`:esc(d?.reason||'当前暂无可验证市场');
+ const pa=document.getElementById('cockPolyAttention');
+ if(pa)pa.textContent=rows.length?`${rows.length} 个可验证相关市场`:'暂无可验证市场';
 }
 function cockpitSyncSymbol(s){const i=document.getElementById('expectationSymbol');if(i)i.value=s;}
 async function runAELCockpit(){
