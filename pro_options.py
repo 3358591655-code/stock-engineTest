@@ -22,38 +22,30 @@ MAX_SNAPSHOTS = max(100, min(5000, int(os.getenv("AEL_PRO_OPTIONS_MAX_SNAPSHOTS"
 MAX_CONTRACTS = max(100, min(10000, int(os.getenv("AEL_PRO_OPTIONS_MAX_CONTRACTS", "5000"))))
 
 
-def _credential_pair() -> tuple[str | None, str | None, str, str]:
-    """Read Alpaca credentials with backward-compatible aliases.
-
-    Railway injects service variables into the running deployment. We strip
-    accidental whitespace because copied secrets occasionally contain it.
-    Never expose the values themselves in diagnostics.
-    """
-    key_candidates = (
-        ("ALPACA_API_KEY", os.getenv("ALPACA_API_KEY")),
-        ("APCA_API_KEY_ID", os.getenv("APCA_API_KEY_ID")),
-    )
-    secret_candidates = (
-        ("ALPACA_SECRET_KEY", os.getenv("ALPACA_SECRET_KEY")),
-        ("APCA_API_SECRET_KEY", os.getenv("APCA_API_SECRET_KEY")),
-    )
-    key_name, key = next(((n, str(v).strip()) for n, v in key_candidates if v and str(v).strip()), ("", None))
-    secret_name, secret = next(((n, str(v).strip()) for n, v in secret_candidates if v and str(v).strip()), ("", None))
+def _credentials() -> tuple[str | None, str | None, str | None, str | None]:
+    # Keep compatibility with both the names used by AEL and Alpaca's native
+    # header names. Values are stripped so an accidental leading/trailing
+    # whitespace in Railway does not make a valid credential look missing.
+    key_candidates = ("ALPACA_API_KEY", "APCA_API_KEY_ID", "ALPACA_KEY", "APCA_API_KEY")
+    secret_candidates = ("ALPACA_SECRET_KEY", "APCA_API_SECRET_KEY", "ALPACA_SECRET", "ALPACA_API_SECRET")
+    key_name = next((n for n in key_candidates if os.getenv(n) and os.getenv(n).strip()), None)
+    secret_name = next((n for n in secret_candidates if os.getenv(n) and os.getenv(n).strip()), None)
+    key = os.getenv(key_name).strip() if key_name else None
+    secret = os.getenv(secret_name).strip() if secret_name else None
     return key, secret, key_name, secret_name
 
 
 def _headers() -> dict[str, str]:
-    key, secret, _, _ = _credential_pair()
+    key, secret, _, _ = _credentials()
     if not key or not secret:
         raise HTTPException(
             status_code=503,
-            detail="Pro 期权数据源未配置完整 Alpaca 凭证。请检查当前 Railway 服务/环境中的 ALPACA_API_KEY 与 ALPACA_SECRET_KEY；不要把密钥发到聊天里。",
+            detail="Pro 期权数据源未配置完整 Alpaca 凭证。请检查当前 Railway Service 的 ALPACA_API_KEY 与 ALPACA_SECRET_KEY；Lite 不受影响。",
         )
     return {
         "APCA-API-KEY-ID": key,
         "APCA-API-SECRET-KEY": secret,
         "Accept": "application/json",
-        "User-Agent": "AEL-Pro-Options/2.6.39",
     }
 
 
@@ -99,6 +91,11 @@ def _date_window(dte_min: int, dte_max: int) -> tuple[str, str]:
 
 
 def _contracts(symbol: str, exp_gte: str, exp_lte: str) -> dict[str, dict[str, Any]]:
+    """Optional metadata enrichment. Market Data snapshots are authoritative for
+    the scanner; Trading API contract metadata must never be a single point of
+    failure because some Alpaca accounts expose market data without the same
+    Trading API entitlements.
+    """
     params = {
         "underlying_symbols": symbol,
         "status": "active",
@@ -108,15 +105,8 @@ def _contracts(symbol: str, exp_gte: str, exp_lte: str) -> dict[str, dict[str, A
     }
     try:
         data = _get(f"{TRADING_BASE}/v2/options/contracts", params)
-    except HTTPException as exc:
-        # Metadata is helpful but not mandatory: the public Market Data
-        # snapshots already contain the OCC contract symbol, which _normalize
-        # can decode. Do not turn a Trading API metadata permission issue into
-        # a total options-data outage. Authentication failures on snapshots
-        # are still surfaced normally.
-        if exc.status_code in {401, 403, 404, 405}:
-            return {}
-        raise
+    except HTTPException:
+        return {}
     items = data.get("option_contracts") or data.get("contracts") or []
     return {str(x.get("symbol")): x for x in items if x.get("symbol")}
 
@@ -425,57 +415,45 @@ def _opening_status(row: dict[str, Any], strategy: str) -> tuple[str, list[str]]
 
 @router.get("/health")
 def pro_options_health():
-    key, secret, key_source, secret_source = _credential_pair()
-    result = {
+    key, secret, key_name, secret_name = _credentials()
+    base = {
         "ok": True,
         "configured": bool(key and secret),
         "key_present": bool(key),
         "secret_present": bool(secret),
-        "key_source": key_source or None,
-        "secret_source": secret_source or None,
+        "key_source": key_name,
+        "secret_source": secret_name,
         "feed": FEED,
         "module": "AEL Pro Options",
         "execution": False,
-        "railway": {
-            "service": os.getenv("RAILWAY_SERVICE_NAME"),
-            "environment": os.getenv("RAILWAY_ENVIRONMENT_NAME"),
-            "deployment": os.getenv("RAILWAY_DEPLOYMENT_ID"),
-        },
         "message": "仅行情/研究，不包含下单执行",
+        "railway_service": os.getenv("RAILWAY_SERVICE_NAME"),
+        "railway_environment": os.getenv("RAILWAY_ENVIRONMENT_NAME"),
+        "railway_deployment": os.getenv("RAILWAY_DEPLOYMENT_ID"),
     }
     if not key or not secret:
-        result["diagnostic"] = "ENV_MISSING"
-        return result
-
-    # A lightweight authenticated call makes the health endpoint distinguish
-    # 'credentials are present' from 'Alpaca rejected them'. Do not call the
-    # trading/order API and do not expose response bodies containing secrets.
+        base.update({"alpaca_auth": "not_tested", "market_data": "not_tested", "diagnosis": "运行进程没有同时读到 Key 与 Secret。"})
+        return base
     try:
         r = requests.get(
-            f"{DATA_BASE}/v1beta1/options/contracts",
-            headers=_headers(),
-            params={"underlying_symbols": "AAPL", "status": "active", "limit": 1},
-            timeout=min(TIMEOUT, 6.0),
+            f"{DATA_BASE}/v1beta1/options/snapshots/AAPL",
+            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret, "Accept": "application/json"},
+            params={"feed": FEED, "limit": 1}, timeout=min(TIMEOUT, 8),
         )
-        result["alpaca_http_status"] = r.status_code
-        if r.ok:
-            result["alpaca_auth"] = "ok"
-            result["diagnostic"] = "OK"
-        elif r.status_code in (401, 403):
-            result["alpaca_auth"] = "failed"
-            result["diagnostic"] = "AUTH_FAILED" if r.status_code == 401 else "PERMISSION_DENIED"
+        base["alpaca_http_status"] = r.status_code
+        if r.status_code == 200:
+            base.update({"alpaca_auth": "ok", "market_data": "ok", "diagnosis": "Key/Secret 已注入且 Alpaca 期权行情认证成功。"})
+        elif r.status_code == 401:
+            base.update({"alpaca_auth": "failed", "market_data": "failed", "diagnosis": "Alpaca 认证失败：Key/Secret 无效或已失效。"})
+        elif r.status_code == 403:
+            base.update({"alpaca_auth": "ok_or_unknown", "market_data": "forbidden", "diagnosis": "凭证已到达 Alpaca，但当前 feed/资源权限不足。"})
         elif r.status_code == 429:
-            result["alpaca_auth"] = "unknown"
-            result["diagnostic"] = "RATE_LIMIT"
+            base.update({"alpaca_auth": "unknown", "market_data": "rate_limited", "diagnosis": "Alpaca 限流；不是凭证缺失。"})
         else:
-            result["alpaca_auth"] = "unknown"
-            result["diagnostic"] = "DATA_SOURCE_ERROR"
-        return result
+            base.update({"alpaca_auth": "unknown", "market_data": "error", "diagnosis": f"Alpaca 返回 HTTP {r.status_code}。"})
     except requests.RequestException as exc:
-        result["alpaca_auth"] = "unknown"
-        result["diagnostic"] = "NETWORK_ERROR"
-        result["error"] = str(exc)[:180]
-        return result
+        base.update({"alpaca_auth": "unknown", "market_data": "network_error", "diagnosis": f"连接 Alpaca 失败：{str(exc)[:120]}"})
+    return base
 
 
 @router.get("/chain/{symbol}")

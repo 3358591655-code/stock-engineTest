@@ -99,22 +99,6 @@ def _yes_probability(m):
     return None
 
 
-def _probability_rows(m):
-    outcomes = _parse_jsonish(m.get("outcomes")) or m.get("outcomes")
-    prices = _parse_jsonish(m.get("outcomePrices")) or m.get("outcomePrices")
-    if not isinstance(outcomes, list) or not isinstance(prices, list):
-        return []
-    out=[]
-    for i, outcome in enumerate(outcomes):
-        if i >= len(prices):
-            continue
-        p=_num(prices[i])
-        if p is None or not 0 <= p <= 1:
-            continue
-        out.append({"outcome": str(outcome), "probability": p})
-    return out
-
-
 def _parse_threshold_value(v, metric):
     if v is None or v == "":
         return None
@@ -169,81 +153,82 @@ def _classify(question: str):
     return None
 
 
-
-def _price_threshold(question: str, market=None):
-    market = market or {}
-    for key in ("groupItemThreshold", "groupItemTitle", "xAxisValue", "lowerBound", "upperBound"):
-        v = market.get(key)
-        if v is None or v == "":
+def _outcome_probabilities(m):
+    outcomes = _parse_jsonish(m.get("outcomes")) or m.get("outcomes")
+    prices = _parse_jsonish(m.get("outcomePrices")) or m.get("outcomePrices")
+    if not isinstance(outcomes, list) or not isinstance(prices, list):
+        return []
+    out = []
+    for i, outcome in enumerate(outcomes):
+        if i >= len(prices):
             continue
-        m = re.search(r"(?<!\d)(\d+(?:\.\d+)?)", str(v).replace(",", ""))
-        if m:
-            return float(m.group(1))
-    q=question.lower().replace(",", "")
-    pats=(
-        r"(?:hit|reach|dip to|above|below|over|under|at least|close(?:d)? (?:above|below))\s*\$?\s*(\d+(?:\.\d+)?)",
-        r"\$\s*(\d+(?:\.\d+)?)",
-    )
-    for pat in pats:
-        m=re.search(pat,q)
-        if m:
-            return float(m.group(1))
+        p = _num(prices[i])
+        if p is None or p < 0 or p > 1:
+            continue
+        out.append({"outcome": str(outcome), "probability": p})
+    return out
+
+
+def _yes_probability(m):
+    for x in _outcome_probabilities(m):
+        if x["outcome"].strip().lower() in {"yes", "是"}:
+            return x["probability"]
     return None
 
 
-def _is_price_market(combined: str):
-    q=combined.lower()
-    return bool(re.search(r"\b(?:stock price|share price|hit|reach|dip|above|below|close|price target|price)\b", q)) and not _classify(combined)
+def _market_matches_symbol(m, symbol):
+    q = _market_question(m)
+    context_text = " ".join(str(m.get(k) or "") for k in (
+        "event_title", "event_subtitle", "event_description", "event_category",
+        "event_subcategory", "event_ticker", "ticker", "slug", "title"
+    ))
+    combined = (q + " " + context_text).strip()
+    # Match ticker as a token, not as a substring of another word.
+    symbol_re = re.compile(r"(?<![A-Z0-9])" + re.escape(symbol) + r"(?![A-Z0-9])", re.I)
+    if symbol_re.search(combined):
+        return True
+    # For common company aliases, permit company-name matches as well.
+    aliases = [symbol] + _ALIASES.get(symbol, [])
+    low = combined.lower()
+    return any(a.lower() in low for a in aliases if a)
 
 
-def _clean_price_market(m, symbol):
-    q=_market_question(m)
-    context_text=" ".join(str(m.get(k) or "") for k in ("event_title","event_subtitle","event_description","event_category","event_subcategory","slug","ticker"))
-    combined=(q+" "+context_text).strip()
-    symbol_re=re.compile(r"(?<![A-Z0-9])"+re.escape(symbol)+r"(?![A-Z0-9])",re.I)
-    if not symbol_re.search(combined):
-        return None
-    if not _is_price_market(combined):
-        return None
-    probs=_probability_rows(m)
-    yes=_yes_probability(m)
-    return {
-        "symbol":symbol,
-        "question":q,
-        "market_type":"stock_price",
-        "threshold":_price_threshold(combined,m),
-        "yes_probability":yes,
-        "probabilities":probs,
-        "volume":_num(m.get("volumeNum") if m.get("volumeNum") is not None else m.get("volume")),
-        "liquidity":_num(m.get("liquidityNum") if m.get("liquidityNum") is not None else m.get("liquidity")),
-        "slug":m.get("slug"),
-        "url":("https://polymarket.com/event/"+str(m.get("slug"))) if m.get("slug") else None,
-    }
+def _classify_any(question, event_title="", event_category=""):
+    q = (str(question or "") + " " + str(event_title or "") + " " + str(event_category or "")).lower()
+    if re.search(r"\beps\b|earnings per share|profit per share|non[- ]gaap eps|gaap eps", q):
+        return "eps"
+    if re.search(r"revenue|sales|total revenue|quarterly revenue", q):
+        return "revenue"
+    if re.search(r"beat|earnings|quarterly results|report.*earnings|earnings.*report|profit", q):
+        return "earnings"
+    if re.search(r"price|hit|reach|dip|above \$|below \$|close at|trade at|stock", q):
+        return "price"
+    return "other"
+
 
 def _clean_market(m, symbol, query_specific=False):
     q = _market_question(m)
-    context_text = " ".join(str(m.get(k) or "") for k in ("event_title", "event_subtitle", "event_description", "event_category", "event_subcategory", "slug", "ticker"))
-    combined = (q + " " + context_text).strip()
-    # Search results can include adjacent markets. Keep only markets that
-    # actually reference the requested ticker, while allowing ticker-bearing
-    # event metadata to identify child threshold markets.
-    symbol_re = re.compile(r"(?<![A-Z0-9])" + re.escape(symbol) + r"(?![A-Z0-9])", re.I)
-    if not symbol_re.search(combined) and not m.get("_query_event_match"):
+    event_title = str(m.get("event_title") or "")
+    event_category = str(m.get("event_category") or "")
+    if not _market_matches_symbol(m, symbol) and not m.get("_query_event_match"):
         return None
-    metric = _classify(combined)
-    if not metric:
+    probs = _outcome_probabilities(m)
+    if not probs:
         return None
-    p = _yes_probability(m)
-    threshold = _threshold(combined, metric, m)
+    metric = _classify_any(q, event_title, event_category)
+    threshold_metric = metric if metric in {"eps", "revenue"} else None
+    threshold = _threshold(q + " " + event_title, threshold_metric, m) if threshold_metric else None
     return {
         "symbol": symbol,
         "question": q,
-        "metric": metric,
+        "event_title": event_title or None,
+        "category": metric,
         "threshold": threshold,
-        "yes_probability": p,
-        "probabilities": _probability_rows(m),
+        "yes_probability": _yes_probability(m),
+        "outcomes": probs,
         "volume": _num(m.get("volumeNum") if m.get("volumeNum") is not None else m.get("volume")),
         "liquidity": _num(m.get("liquidityNum") if m.get("liquidityNum") is not None else m.get("liquidity")),
+        "end_date": m.get("endDate") or m.get("end_date"),
         "slug": m.get("slug"),
         "group_item_title": m.get("groupItemTitle"),
         "group_item_threshold": m.get("groupItemThreshold"),
@@ -369,80 +354,76 @@ def analyze_polymarket(symbol: str) -> dict[str, Any]:
         if hit and time() - hit[0] < TTL:
             return hit[1]
 
-    # Keep the request set tiny and parallel. This sidecar must never block AEL.
-    # One small public-search request is intentional: this module is a UI sidecar,
-    # so a slow prediction-market endpoint must never become page latency.
-    queries = [symbol, f"{symbol} earnings", f"{symbol} revenue", f"{symbol} EPS"]
+    # Broad discovery: ticker + company aliases + earnings/price phrasing. We
+    # intentionally keep all active markets tied to the requested stock rather
+    # than restricting the overview to EPS/revenue markets.
+    queries = [symbol, f"{symbol} earnings", f"{symbol} revenue", f"{symbol} EPS", f"{symbol} price", f"{symbol} stock"]
+    queries += _ALIASES.get(symbol, [])
     queries += [f"{a} earnings" for a in _ALIASES.get(symbol, [])]
+    queries = list(dict.fromkeys(queries))[:12]
     markets = []
-    queries = list(dict.fromkeys(queries))[:8]
-    with ThreadPoolExecutor(max_workers=min(6, len(queries) or 1)) as ex:
+    errors = []
+    with ThreadPoolExecutor(max_workers=min(8, len(queries) or 1)) as ex:
         futures = [ex.submit(_query, symbol, q) for q in queries]
         for fut in as_completed(futures):
             try:
                 markets.extend(fut.result())
-            except Exception:
-                pass
+            except Exception as exc:
+                errors.append(str(exc)[:120])
 
     cleaned = []
-    price_markets = []
     seen = set()
-    seen_price = set()
     for m in markets:
         if not isinstance(m, dict) or not _active(m):
             continue
-        x = _clean_market(m, symbol, query_specific=True)
-        if x:
-            key = (x["question"], x.get("metric"), None if x.get("threshold") is None else round(float(x["threshold"]), 8))
-            if key not in seen:
-                seen.add(key)
-                cleaned.append(x)
-        px = _clean_price_market(m, symbol)
-        if px:
-            key = (px["question"], px.get("threshold"))
-            if key not in seen_price:
-                seen_price.add(key)
-                price_markets.append(px)
+        x = _clean_market(m, symbol)
+        if not x:
+            continue
+        key = (x.get("question"), x.get("event_title"), x.get("slug"), tuple((o["outcome"], round(o["probability"], 6)) for o in x.get("outcomes", [])))
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(x)
 
-    eps = _infer([x for x in cleaned if x["metric"] == "eps"])
-    revenue = _infer([x for x in cleaned if x["metric"] == "revenue"])
+    # Highest-information ordering for the overview: category, liquidity,
+    # volume, then question. No predictive ranking is implied.
+    cleaned.sort(key=lambda x: (
+        {"earnings": 0, "eps": 1, "revenue": 2, "price": 3, "other": 4}.get(x.get("category"), 9),
+        -(x.get("liquidity") or 0),
+        -(x.get("volume") or 0),
+        x.get("question") or "",
+    ))
+
+    eps = _infer([x for x in cleaned if x["category"] == "eps"])
+    revenue = _infer([x for x in cleaned if x["category"] == "revenue"])
     beat = None
     for x in cleaned:
-        q = x["question"].lower()
+        q = (x["question"] + " " + (x.get("event_title") or "")).lower()
         if ("beat" in q or "above consensus" in q or "exceed" in q) and x.get("yes_probability") is not None:
             if beat is None or (x.get("liquidity") or 0) > (beat.get("liquidity") or 0):
                 beat = x
 
-    # Only expose a financial-period expectation when the market itself is an
-    # earnings market. Active stock-price markets are useful context, but must
-    # never be converted into EPS/revenue estimates.
-    earnings_available = bool(cleaned)
-    price_available = bool(price_markets)
-    if earnings_available:
-        reason = "链上财报市场已找到。"
-        if not eps.get("available") or not revenue.get("available"):
-            reason += " EPS/营收门槛不足时不强行反演。"
-    elif price_available:
-        reason = "当前暂无可验证的链上财报门槛，但存在链上股票价格预测市场；不将价格概率换算成 EPS/营收。"
-    else:
-        reason = "当前暂无可验证的个股财报或股票价格预测市场。"
-
     result = {
         "ok": True,
         "symbol": symbol,
-        "available": bool(earnings_available or price_available),
+        "available": bool(cleaned),
         "source": "Polymarket 链上预测市场",
-        "source_url": "https://polymarket.com/predictions/earnings",
-        "earnings_available": earnings_available,
+        "source_url": "https://polymarket.com/",
         "eps": eps,
         "revenue": revenue,
         "beat_probability": beat.get("yes_probability") if beat else None,
         "beat_question": beat.get("question") if beat else None,
-        "markets": cleaned[:50],
-        "stock_price_markets": price_markets[:50],
-        "all_probabilities": (cleaned + price_markets)[:80],
-        "reason": reason,
+        "markets": cleaned[:100],
+        "market_count": len(cleaned),
+        "market_types": {k: sum(1 for x in cleaned if x.get("category") == k) for k in ("earnings", "eps", "revenue", "price", "other")},
+        "evidence_note": "概览展示的是当前检索到的、与该股票直接相关且有可验证概率价格的活跃 Polymarket 市场；EPS/营收中枢只有在足够门槛形成可验证概率曲线时才反演。",
+        "reason": (
+            "存在当前可验证的个股 Polymarket 市场；财报中枢按证据强度单独判断。" if cleaned
+            else "当前没有找到可验证的、与该股票直接相关的活跃 Polymarket 市场。"
+        ),
+        "errors": errors[:3],
     }
     with _LOCK:
         _CACHE[symbol] = (time(), result)
     return result
+
