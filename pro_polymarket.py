@@ -17,8 +17,8 @@ from typing import Any
 import requests
 
 BASE = "https://gamma-api.polymarket.com"
-TTL = 180
-_TIMEOUT = 2.0
+TTL = 120
+_TIMEOUT = 3.5
 _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _LOCK = threading.Lock()
 
@@ -43,23 +43,35 @@ def _parse_jsonish(v):
     return None
 
 
-def _flatten_markets(obj):
+def _flatten_markets(obj, context=None):
+    """Flatten Gamma search responses while preserving parent event text.
+
+    Polymarket search returns events containing child markets. The child market
+    question is often a template such as ``above __``; the actual threshold is
+    carried by fields such as groupItemTitle/groupItemThreshold.
+    """
+    context = context or {}
     out = []
     if isinstance(obj, dict):
+        local = dict(context)
+        for k in ("title", "subtitle", "description", "ticker", "category", "subcategory"):
+            if obj.get(k) and not local.get(f"event_{k}"):
+                local[f"event_{k}"] = obj.get(k)
+        if any(k in obj for k in ("question", "conditionId", "clobTokenIds")):
+            item = dict(obj)
+            for k, v in local.items():
+                item.setdefault(k, v)
+            out.append(item)
         for key in ("markets", "events", "data", "results"):
             if key in obj:
-                out.extend(_flatten_markets(obj[key]))
-        # A market-like object can be returned directly.
-        if any(k in obj for k in ("question", "market", "conditionId", "clobTokenIds")):
-            out.append(obj)
+                out.extend(_flatten_markets(obj[key], local))
     elif isinstance(obj, list):
         for x in obj:
-            out.extend(_flatten_markets(x))
+            out.extend(_flatten_markets(x, context))
     return out
 
-
 def _get(url, params):
-    r = requests.get(url, params=params, timeout=_TIMEOUT, headers={"User-Agent": "AEL/2.6.34"})
+    r = requests.get(url, params=params, timeout=_TIMEOUT, headers={"User-Agent": "AEL/2.6.36"})
     r.raise_for_status()
     return r.json()
 
@@ -87,9 +99,40 @@ def _yes_probability(m):
     return None
 
 
-def _threshold(question: str, metric: str):
+def _parse_threshold_value(v, metric):
+    if v is None or v == "":
+        return None
+    text = str(v).strip().replace(",", "")
+    # Keep the raw numeric field useful even when Gamma gives a bare number.
+    m = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not m:
+        return None
+    val = float(m.group(0))
+    low = text.lower()
+    if metric == "revenue":
+        if re.search(r"\b(b|bn|billion)\b", low):
+            return val * 1e9
+        if re.search(r"\b(m|mm|million)\b", low):
+            return val * 1e6
+        # Gamma's groupItemThreshold for revenue can already be absolute USD.
+        if abs(val) >= 1e6:
+            return val
+        return val * 1e9 if val < 1e5 else val
+    if metric == "eps":
+        if re.search(r"\b(b|bn|billion|m|mm|million)\b", low):
+            return None
+        return val
+    return None
+
+def _threshold(question: str, metric: str, market=None):
+    market = market or {}
+    # Multi-outcome earnings events commonly store the strike here instead of
+    # putting it in the question (the question literally says "above __").
+    for key in ("groupItemThreshold", "groupItemTitle", "xAxisValue", "lowerBound", "upperBound"):
+        parsed = _parse_threshold_value(market.get(key), metric)
+        if parsed is not None:
+            return parsed
     q = question.lower().replace(",", "")
-    # Capture common USD threshold forms: $2.15, 2.15, $115B, 115 billion.
     patterns = [
         r"(?:above|over|greater than|at least|exceed|>)\s*\$?\s*(\d+(?:\.\d+)?)\s*(b|bn|billion|m|mm|million)?",
         r"\$\s*(\d+(?:\.\d+)?)\s*(b|bn|billion|m|mm|million)?",
@@ -98,57 +141,60 @@ def _threshold(question: str, metric: str):
         m = re.search(pat, q)
         if not m:
             continue
-        val = float(m.group(1))
-        unit = (m.group(2) or "").lower()
-        if metric == "revenue":
-            if unit in {"b", "bn", "billion"}:
-                return val * 1e9
-            if unit in {"m", "mm", "million"}:
-                return val * 1e6
-        if metric == "eps" and not unit:
-            return val
-        if metric == "eps" and unit in {"m", "mm", "million", "b", "bn", "billion"}:
-            return None
+        return _parse_threshold_value((m.group(1) + (m.group(2) or "")), metric)
     return None
-
 
 def _classify(question: str):
     q = question.lower()
-    if re.search(r"\beps\b|earnings per share|\bprofit per share\b", q):
+    if re.search(r"\beps\b|earnings per share|\bprofit per share\b|non[- ]gaap eps|gaap eps", q):
         return "eps"
-    if re.search(r"revenue|sales", q):
+    if re.search(r"revenue|sales|total revenue|quarterly revenue", q):
         return "revenue"
     return None
 
 
 def _clean_market(m, symbol):
     q = _market_question(m)
-    metric = _classify(q)
+    context_text = " ".join(str(m.get(k) or "") for k in ("event_title", "event_subtitle", "event_description", "event_category", "event_subcategory", "slug", "ticker"))
+    combined = (q + " " + context_text).strip()
+    # Search results can include adjacent markets. Keep only markets that
+    # actually reference the requested ticker, while allowing ticker-bearing
+    # event metadata to identify child threshold markets.
+    symbol_re = re.compile(r"(?<![A-Z0-9])" + re.escape(symbol) + r"(?![A-Z0-9])", re.I)
+    if not symbol_re.search(combined):
+        return None
+    metric = _classify(combined)
     if not metric:
         return None
     p = _yes_probability(m)
-    threshold = _threshold(q, metric)
+    threshold = _threshold(combined, metric, m)
     return {
         "symbol": symbol,
         "question": q,
         "metric": metric,
         "threshold": threshold,
         "yes_probability": p,
-        "volume": _num(m.get("volume")),
-        "liquidity": _num(m.get("liquidity")),
+        "volume": _num(m.get("volumeNum") if m.get("volumeNum") is not None else m.get("volume")),
+        "liquidity": _num(m.get("liquidityNum") if m.get("liquidityNum") is not None else m.get("liquidity")),
         "slug": m.get("slug"),
+        "group_item_title": m.get("groupItemTitle"),
+        "group_item_threshold": m.get("groupItemThreshold"),
         "url": ("https://polymarket.com/event/" + str(m.get("slug"))) if m.get("slug") else None,
     }
 
-
 def _query(symbol, query):
-    # public-search is intentionally used rather than private trading endpoints.
     try:
-        raw = _get(f"{BASE}/public-search", {"q": query})
+        raw = _get(f"{BASE}/public-search", {
+            "q": query,
+            "events_status": "active",
+            "keep_closed_markets": 0,
+            "limit_per_type": 50,
+            "search_tags": "true",
+            "optimized": "true",
+        })
         return _flatten_markets(raw)
     except Exception:
         return []
-
 
 def _infer(metric_rows):
     rows = [x for x in metric_rows if x.get("threshold") is not None and x.get("yes_probability") is not None]
@@ -199,7 +245,15 @@ def analyze_polymarket(symbol: str) -> dict[str, Any]:
     # Keep the request set tiny and parallel. This sidecar must never block AEL.
     # One small public-search request is intentional: this module is a UI sidecar,
     # so a slow prediction-market endpoint must never become page latency.
-    markets = _query(symbol, f"{symbol} earnings")
+    queries = [symbol, f"{symbol} earnings", f"{symbol} revenue", f"{symbol} EPS"]
+    markets = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = [ex.submit(_query, symbol, q) for q in queries]
+        for fut in as_completed(futures):
+            try:
+                markets.extend(fut.result())
+            except Exception:
+                pass
 
     cleaned = []
     seen = set()
