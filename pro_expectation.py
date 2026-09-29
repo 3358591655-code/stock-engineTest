@@ -64,161 +64,64 @@ def _price_signal(h):
 
 
 
-_FINRA_TOKEN_CACHE = {"token": None, "expires_at": 0.0}
-_FINRA_TOKEN_LOCK = threading.Lock()
+def _finra_ats_source(symbol):
+    """Optional FINRA OTC/ATS evidence. Requires FINRA_API_TOKEN.
 
-
-def _finra_access_token(force_refresh=False):
-    """Get/cache a short-lived FINRA OAuth2 access token.
-
-    FINRA requires OAuth 2.0: Client ID + Client Secret are exchanged at the
-    FINRA Identity Platform (FIP) for a Bearer access token. The long-lived
-    secret never leaves the server and is never returned to the frontend.
+    FINRA publishes weekly ATS/non-ATS aggregate data with a delay. This is
+    evidence about reported off-exchange activity, not a real-time dark-pool
+    order book and not proof of buy/sell direction.
     """
-    client_id = os.getenv("FINRA_CLIENT_ID", "").strip()
-    client_secret = os.getenv("FINRA_CLIENT_SECRET", "").strip()
-    if not client_id or not client_secret:
-        return None, "未配置 FINRA_CLIENT_ID / FINRA_CLIENT_SECRET"
-
-    now = time()
-    with _FINRA_TOKEN_LOCK:
-        cached = _FINRA_TOKEN_CACHE.get("token")
-        expires_at = float(_FINRA_TOKEN_CACHE.get("expires_at") or 0)
-        if not force_refresh and cached and now < expires_at:
-            return cached, None
-
-        try:
-            fip_url = "https://ews.fip.finra.org/fip/rest/ews/oauth2/access_token"
-            r = requests.post(
-                fip_url,
-                params={"grant_type": "client_credentials"},
-                auth=(client_id, client_secret),
-                headers={"Accept": "application/json"},
-                timeout=8.0,
-            )
-            r.raise_for_status()
-            data = r.json() if r.content else {}
-            token = str(data.get("access_token") or "").strip()
-            if not token:
-                return None, "FINRA OAuth 未返回 access_token"
-            try:
-                expires_in = float(data.get("expires_in") or 1800)
-            except Exception:
-                expires_in = 1800.0
-            # FINRA documents caching the token for 30 minutes. Keep a small
-            # safety margin so an in-flight request does not hit expiry.
-            cache_seconds = max(60.0, min(1800.0, expires_in - 60.0))
-            _FINRA_TOKEN_CACHE.update({"token": token, "expires_at": now + cache_seconds})
-            return token, None
-        except Exception as exc:
-            return None, f"FINRA OAuth 认证失败：{str(exc)[:180]}"
-
-
-def _finra_weekly_summary(token, symbol, summary_type):
-    """Query one FINRA weeklySummary symbol bucket."""
-    url = "https://api.finra.org/data/group/OTCMarket/name/weeklySummary"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "Data-API-Version": "1",
-    }
-    fields = [
-        "issueSymbolIdentifier", "issueName", "weekStartDate",
-        "summaryStartDate", "summaryTypeCode", "tierIdentifier",
-        "totalWeeklyShareQuantity", "totalWeeklyTradeCount", "lastUpdateDate",
-    ]
-    payload = {
-        "limit": 1000,
-        "fields": fields,
-        "compareFilters": [
+    out = {"available": False, "weeks": [], "ats_share_pct": None,
+           "ats_share_change_pct": None, "ats_volume_z": None,
+           "block_or_flow_direction": "unknown", "error": None,
+           "source": "FINRA OTC Transparency / Weekly Summary"}
+    token = os.getenv("FINRA_API_TOKEN", "").strip()
+    if not token:
+        out["error"] = "未配置 FINRA_API_TOKEN；不会使用第三方代理冒充暗池数据"
+        return out
+    try:
+        url = "https://api.finra.org/data/group/OTCMarket/name/weeklySummary"
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json",
+                   "Data-API-Version": "1"}
+        fields = ["issueSymbolIdentifier", "issueName", "weekStartDate",
+                  "summaryStartDate", "summaryTypeCode", "reportTypeCode", "tierIdentifier",
+                  "totalWeeklyShareQuantity", "totalTradesCountSum", "lastUpdateDate"]
+        # Ask for the recent 12 weeks for this symbol in one request.
+        payload = {"limit": 200, "fields": fields, "compareFilters": [
             {"compareType": "equal", "fieldName": "issueSymbolIdentifier", "fieldValue": symbol},
             {"compareType": "equal", "fieldName": "tierIdentifier", "fieldValue": "T1"},
-            {"compareType": "equal", "fieldName": "summaryTypeCode", "fieldValue": summary_type},
-        ],
-    }
-    r = requests.post(url, headers=headers, json=payload, timeout=8.0)
-    if r.status_code == 401:
-        raise PermissionError("FINRA access_token 已失效")
-    r.raise_for_status()
-    rows = r.json()
-    return rows if isinstance(rows, list) else []
-
-
-def _finra_ats_source(symbol):
-    """Optional FINRA ATS evidence using FINRA OAuth2 Client Credentials.
-
-    FINRA's weeklySummary is aggregate weekly ATS/non-ATS activity. It is not
-    a real-time dark-pool order book and ATS volume alone does not identify
-    buy/sell direction. Failure is isolated to this optional research source.
-    """
-    out = {
-        "available": False, "weeks": [], "ats_share_pct": None,
-        "ats_share_change_pct": None, "ats_volume_z": None,
-        "block_or_flow_direction": "unknown", "error": None,
-        "source": "FINRA OTC Transparency / Weekly Summary",
-        "auth": "oauth2_client_credentials",
-    }
-
-    # Backward-compatible manual token support, if a deployment already has
-    # one. New deployments should use FINRA_CLIENT_ID + FINRA_CLIENT_SECRET.
-    legacy_token = os.getenv("FINRA_API_TOKEN", "").strip()
-    token, auth_error = _finra_access_token()
-    if not token and legacy_token:
-        token = legacy_token
-        out["auth"] = "legacy_bearer_token"
-    if not token:
-        out["error"] = auth_error or "未配置 FINRA OAuth 凭证"
-        return out
-
-    symbol = str(symbol or "").strip().upper()
-    if not symbol:
-        out["error"] = "股票代码为空"
-        return out
-
-    try:
-        # The public weeklySummary dataset exposes separate ATS and OTC(non-ATS)
-        # symbol aggregates. Query both and calculate the ATS share from the
-        # reported share quantities. No directional buy/sell inference is made.
-        try:
-            ats_rows = _finra_weekly_summary(token, symbol, "ATS_W_SMBL")
-            non_ats_rows = _finra_weekly_summary(token, symbol, "OTC_W_SMBL")
-        except PermissionError:
-            if legacy_token:
-                raise
-            token, auth_error = _finra_access_token(force_refresh=True)
-            if not token:
-                out["error"] = auth_error or "FINRA OAuth 刷新失败"
-                return out
-            ats_rows = _finra_weekly_summary(token, symbol, "ATS_W_SMBL")
-            non_ats_rows = _finra_weekly_summary(token, symbol, "OTC_W_SMBL")
-
+        ]}
+        r = requests.post(url, headers=headers, json=payload, timeout=3.0)
+        r.raise_for_status()
+        rows = r.json()
+        if not isinstance(rows, list) or not rows:
+            out["error"] = "FINRA 未返回该标的 ATS/OTC 周度数据"
+            return out
         weekly = {}
-        for row in ats_rows:
+        for row in rows:
             week = row.get("weekStartDate") or row.get("summaryStartDate")
-            if week:
-                bucket = weekly.setdefault(str(week), {"ats": 0.0, "non_ats": 0.0})
-                bucket["ats"] += _finite(row.get("totalWeeklyShareQuantity")) or 0.0
-        for row in non_ats_rows:
-            week = row.get("weekStartDate") or row.get("summaryStartDate")
-            if week:
-                bucket = weekly.setdefault(str(week), {"ats": 0.0, "non_ats": 0.0})
-                bucket["non_ats"] += _finite(row.get("totalWeeklyShareQuantity")) or 0.0
-
+            if not week:
+                continue
+            code = str(row.get("summaryTypeCode") or row.get("reportTypeCode") or row.get("reportType") or "").upper()
+            shares = _finite(row.get("totalWeeklyShareQuantity")) or 0.0
+            if code.startswith("ATS_W_") or code.startswith("ATS"):
+                bucket = "ats"
+            elif code.startswith("OTC_W_") or "NON" in code or code.startswith("OTC"):
+                bucket = "non_ats"
+            else:
+                continue
+            weekly.setdefault(str(week), {"ats": 0.0, "non_ats": 0.0})[bucket] += shares
         ordered = []
         for week, x in sorted(weekly.items()):
             total = x["ats"] + x["non_ats"]
             if total <= 0:
                 continue
-            ordered.append({
-                "week": week,
-                "ats_shares": x["ats"],
-                "non_ats_shares": x["non_ats"],
-                "ats_share_pct": x["ats"] / total * 100,
-            })
+            ordered.append({"week": week, "ats_shares": x["ats"],
+                            "non_ats_shares": x["non_ats"],
+                            "ats_share_pct": x["ats"] / total * 100})
         if not ordered:
-            out["error"] = "FINRA 未返回该标的 ATS/OTC 周度数据"
+            out["error"] = "FINRA 周度记录缺少可计算的 ATS/Non-ATS 成交量"
             return out
-
         latest = ordered[-1]
         out["weeks"] = ordered[-12:]
         out["ats_share_pct"] = latest["ats_share_pct"]
@@ -226,10 +129,8 @@ def _finra_ats_source(symbol):
             out["ats_share_change_pct"] = latest["ats_share_pct"] - ordered[-2]["ats_share_pct"]
         vals = [x["ats_shares"] for x in ordered[-8:]]
         if len(vals) >= 4:
-            prior = vals[:-1]
-            mu = sum(prior) / len(prior)
-            variance = sum((v - mu) ** 2 for v in prior) / max(1, len(prior) - 1)
-            sd = variance ** 0.5
+            mu = sum(vals[:-1]) / max(1, len(vals)-1)
+            sd = (sum((v-mu)**2 for v in vals[:-1]) / max(1, len(vals)-2)) ** 0.5 if len(vals) > 2 else 0
             out["ats_volume_z"] = (latest["ats_shares"] - mu) / sd if sd > 0 else 0.0
         out["available"] = True
         return out
