@@ -22,6 +22,7 @@ from pro_backtest import run_backtest
 from pro_expectation import analyze_expectation
 from pro_whisper import analyze_whisper, invalidate_whisper_cache
 from pro_whisper_backtest import run_whisper_backtest
+from pro_fair_backtest import run_fair_backtest
 from pro_guidance_ats import analyze_guidance_ats
 from ael_treasury import analyze_treasury
 from asset_data import get_asset, get_asset_index, get_asset_news
@@ -172,6 +173,14 @@ def pro_whisper_backtest(
         return result
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f'AEL Whisper 回测失败：{str(exc)[:220]}')
+
+@app.get('/api/pro/fair-backtest/{symbol}')
+def pro_fair_backtest(symbol: str, periods: int = Query(8, ge=4, le=12)):
+    # New comparison-only layer. It does not modify AEL or ATS native backtests.
+    try:
+        return run_fair_backtest(symbol, periods)
+    except Exception as exc:
+        return {'ok': False, 'symbol': symbol.upper(), 'status': 'error', 'error': str(exc)[:220], 'rows': []}
 
 @app.get('/api/pro/guidance-ats/{symbol}')
 def pro_guidance_ats(symbol: str):
