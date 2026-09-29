@@ -14,7 +14,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import math
 import pandas as pd
-import yfinance as yf
+try:
+    import yfinance as yf
+except Exception:
+    yf = None
 
 from pro_ats import ats_source
 from pro_guidance_backtest import run_guidance_backtest
@@ -87,6 +90,50 @@ def _period_to_quarter_label(target_period, history_rows):
             if rd> end and (rd-end).days<=70: cand.append((abs((rd-end).days),r['quarter']))
         except Exception: pass
     return min(cand)[1] if cand else None
+
+def _normalize_close_series(close):
+    """Normalize historical close index to tz-naive dates for safe event matching."""
+    if close is None:
+        return None
+    try:
+        idx = pd.DatetimeIndex(close.index)
+        if idx.tz is not None:
+            idx = idx.tz_convert(None)
+        idx = idx.normalize()
+        out = pd.Series(pd.to_numeric(close, errors="coerce").to_numpy(), index=idx)
+        return out.dropna().sort_index()
+    except Exception:
+        return None
+
+def _load_history_close(symbol, years=3):
+    """Yahoo chart API first, yfinance fallback; return tz-naive daily closes."""
+    import requests, time as _time
+    sym=str(symbol or '').strip().upper()
+    end=int(_time.time()); start=end-int(years*366*86400)
+    url=f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?period1={start}&period2={end}&interval=1d&events=history"
+    headers={'User-Agent':'Mozilla/5.0 AEL/2.6.31'}
+    try:
+        r=requests.get(url,headers=headers,timeout=8)
+        js=r.json() if r.ok else None
+        res=((js or {}).get('chart') or {}).get('result') or []
+        if res:
+            q=res[0]; ts=q.get('timestamp') or []; vals=((q.get('indicators') or {}).get('quote') or [{}])[0].get('close') or []
+            pairs=[]
+            for t,v in zip(ts,vals):
+                if v is not None:
+                    pairs.append((pd.to_datetime(t,unit='s',utc=True).tz_convert(None).normalize(),float(v)))
+            if pairs:
+                return pd.Series([v for _,v in pairs],index=[d for d,_ in pairs]).sort_index()
+    except Exception:
+        pass
+    try:
+        if yf is not None:
+            h=yf.Ticker(sym).history(period=f'{years}y',interval='1d',auto_adjust=False)
+            if h is not None and not h.empty and 'Close' in h:
+                return _normalize_close_series(h['Close'])
+    except Exception:
+        pass
+    return None
 
 def _historical_ats_signal(weeks,event_date,close):
     if not weeks:return None
@@ -167,7 +214,7 @@ def _management_bias_prior(rows, idx, metric):
     return sum(errs[-8:])/len(errs[-8:]) if errs else 0.0
 
 def run_fair_backtest(symbol:str,periods:int=8):
-    symbol=str(symbol or '').strip().upper(); periods=max(4,min(12,int(periods or 8)))
+    symbol=str(symbol or '').strip().upper(); periods=max(4,min(40,int(periods or 8)))
     if not symbol:return {'ok':False,'error':'缺少标的'}
     try:
         gb=run_guidance_backtest(symbol,max(periods+4,12)); grows=gb.get('rows') or []
@@ -176,8 +223,7 @@ def run_fair_backtest(symbol:str,periods:int=8):
         wb=run_whisper_backtest(symbol,max(periods+6,14)); wrows=wb.get('rows') or []
         mb_rows=_marketbeat_history(symbol)
         ats=ats_source(symbol); weeks=ats.get('weeks') or []
-        h=yf.Ticker(symbol).history(period='2y',interval='1d',auto_adjust=False)
-        close=pd.to_numeric(h.get('Close'),errors='coerce').dropna() if h is not None and not h.empty else None
+        close=_load_history_close(symbol, years=3)
         candidates=[]
         grows=sorted(grows,key=lambda r:r.get('target_period') or '')
         for i,g in enumerate(grows):
@@ -186,14 +232,22 @@ def run_fair_backtest(symbol:str,periods:int=8):
             # Revenue consensus can be sourced independently from MarketBeat's
             # public quarterly earnings history. Do not require the legacy
             # Whisper backtest to succeed just to build a fair Price-in sample.
-            if wr is None:
-                qlab=None
-                try: qlab=_period_to_quarter_label(g.get('target_period'),mb_rows)
-                except Exception: pass
-                if qlab:
-                    hit=next((x for x in mb_rows if x.get('quarter')==qlab),None)
-                    if hit:
-                        wr={'event_date':hit.get('report_date'),'revenue_consensus':hit.get('revenue_consensus'),'revenue_actual':hit.get('revenue_actual'),'eps_consensus':hit.get('eps_consensus'),'eps_actual':hit.get('eps_actual')}
+            if wr is None and mb_rows:
+                # Match the historical actual result first; this is safer than
+                # assuming a calendar quarter from a company's fiscal period.
+                ar=_finite(actual.get('revenue')); ae=_finite(actual.get('eps'))
+                mbc=[]
+                for x in mb_rows:
+                    rr=_finite(x.get('revenue_actual')); ee=_finite(x.get('eps_actual'))
+                    score=0.0
+                    if ar is not None and rr is not None:
+                        score += max(0.0,100.0-abs(rr-ar)/max(abs(ar),1.0)*1000.0)
+                    if ae is not None and ee is not None:
+                        score += max(0.0,50.0-abs(ee-ae)*50.0)
+                    if score>0: mbc.append((score,x))
+                if mbc:
+                    hit=max(mbc,key=lambda z:z[0])[1]
+                    wr={'event_date':hit.get('report_date'),'revenue_consensus':hit.get('revenue_consensus'),'revenue_actual':hit.get('revenue_actual'),'eps_consensus':hit.get('eps_consensus'),'eps_actual':hit.get('eps_actual')}
             if not wr: continue
             sig=_historical_ats_signal(weeks,wr.get('event_date'),close) if weeks else None
             # Revenue intent is the cleanest common metric because management
