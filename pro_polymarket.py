@@ -413,8 +413,9 @@ def analyze_polymarket(symbol: str) -> dict[str, Any]:
         "revenue": revenue,
         "beat_probability": beat.get("yes_probability") if beat else None,
         "beat_question": beat.get("question") if beat else None,
-        "markets": cleaned[:100],
+        "markets": cleaned,
         "market_count": len(cleaned),
+        "market_count_returned": len(cleaned),
         "market_types": {k: sum(1 for x in cleaned if x.get("category") == k) for k in ("earnings", "eps", "revenue", "price", "other")},
         "evidence_note": "概览展示的是当前检索到的、与该股票直接相关且有可验证概率价格的活跃 Polymarket 市场；EPS/营收中枢只有在足够门槛形成可验证概率曲线时才反演。",
         "reason": (
