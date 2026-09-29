@@ -278,7 +278,7 @@ body.pro-mode .ael-pro-tab{flex:0 0 auto!important;min-height:42px!important;pad
           <div class="ael-cockpit-chain-card"><div class="ael-cockpit-chain-title">管理层指引</div><div id="cockGuidanceRev" class="ael-cockpit-big">暂无数据</div><div id="cockGuidanceEps" class="ael-cockpit-subvalue">EPS：暂无数据</div><small>公司官方表达</small></div>
           <div class="ael-cockpit-chain-card"><div class="ael-cockpit-chain-title">AEL</div><div id="cockAelPriceRev" class="ael-cockpit-big">暂无数据</div><div id="cockAelPriceEps" class="ael-cockpit-subvalue">EPS：暂无数据</div><small>买方解读 / 市场已计入</small></div>
           <div class="ael-cockpit-chain-card"><div class="ael-cockpit-chain-title">ATS</div><div id="cockAtsPriceRev" class="ael-cockpit-big">暂无数据</div><div id="cockAtsPriceEps" class="ael-cockpit-subvalue">EPS：暂无数据</div><small>独立市场信号</small></div>
-          <div class="ael-cockpit-chain-card poly"><div class="ael-cockpit-chain-title">链上美股预期</div><div id="cockPolyRev" class="ael-cockpit-big">暂无数据</div><div id="cockPolyEps" class="ael-cockpit-subvalue">EPS：暂无数据</div><small id="cockPolyBeat">Polymarket · 链上预测市场</small></div>
+          <div class="ael-cockpit-chain-card poly"><div class="ael-cockpit-chain-title">链上美股预期</div><div id="cockPolyRev" class="ael-cockpit-big">暂无数据</div><div id="cockPolyEps" class="ael-cockpit-subvalue">EPS：暂无数据</div><small id="cockPolyBeat">Polymarket · 链上预测市场</small><div id="cockPolyMarkets" class="ael-pro-note" style="margin-top:6px">暂无数据</div></div>
         </div>
         <div id="cockpitChainNote" class="ael-pro-note" style="margin-top:9px">链上美股预期只有在存在足够多个可验证财报门槛时才推导 EPS / 营收中枢；不足时显示“暂无数据”，不强行估算。</div>
       </div>
@@ -936,12 +936,27 @@ function renderCockpitAccuracy(d){
  const st=document.getElementById('cockpitCompareStatus');if(st){st.textContent=n?'AEL / ATS 已回测':'样本不足';st.className='ael-pro-status-pill'+(n?' ok':'');}
 }
 function renderCockpitPoly(d){
- const eRev=document.getElementById('cockPolyRev'),eEps=document.getElementById('cockPolyEps'),beat=document.getElementById('cockPolyBeat');
  const rev=d?.revenue||{},eps=d?.eps||{};
+ const earnings=d?.markets||[], prices=d?.stock_price_markets||[];
  cockpitSet('cockPolyRev',rev.available&&rev.implicit_median!=null?cockpitMoney(rev.implicit_median):'暂无数据');
  cockpitSet('cockPolyEps',eps.available&&eps.implicit_median!=null?cockpitMoney(eps.implicit_median,3):'暂无数据');
- if(beat)beat.textContent=d?.beat_probability!=null?`链上美股预期 · 超预期概率 ${Number(d.beat_probability*100).toFixed(0)}%`:'Polymarket · 链上预测市场';
- const pa=document.getElementById('cockPolyAttention');if(pa)pa.textContent=d?.available?`${(d.markets||[]).length} 个相关市场`:'暂无可验证财报市场';
+ const beat=document.getElementById('cockPolyBeat');
+ if(beat){
+   const b=d?.beat_probability!=null?`超预期概率 ${Number(d.beat_probability*100).toFixed(0)}%`:'';
+   const status=rev.available||eps.available?'链上财报预期':(earnings.length?'链上财报概率':'链上股票预期');
+   beat.textContent=`Polymarket · ${status}${b?' · '+b:''}`;
+ }
+ const pa=document.getElementById('cockPolyAttention');
+ if(pa){
+   const rows=[...earnings,...prices];
+   const fmtP=v=>v==null?'暂无数据':`${Number(v*100).toFixed(0)}%`;
+   const lines=rows.slice(0,8).map(x=>{
+      const p=x.yes_probability!=null?`YES ${fmtP(x.yes_probability)}`:'';
+      const t=x.threshold!=null?(x.market_type==='stock_price'?` · $${Number(x.threshold).toFixed(2)}`:''):'';
+      return `<div style="display:flex;justify-content:space-between;gap:8px"><span>${esc(x.question||'')}</span><b>${p}${t}</b></div>`;
+   }).join('');
+   pa.innerHTML=rows.length?`<div style="display:grid;gap:5px;margin-top:6px">${lines}</div><div class="ael-pro-note" style="margin-top:6px">${esc(d?.reason||'')}</div>`:esc(d?.reason||'当前暂无可验证市场');
+ }
 }
 function cockpitSyncSymbol(s){const i=document.getElementById('expectationSymbol');if(i)i.value=s;}
 async function runAELCockpit(){
