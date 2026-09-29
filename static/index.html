@@ -168,8 +168,9 @@ body.pro-mode .ael-mode-switch button{color:#94a3b8!important;background:transpa
 body.pro-mode .ael-mode-switch button.active{background:#111827!important;color:#fff!important;box-shadow:none!important}
 body.pro-mode #ael-pro-root{background:#090f16!important}
 body.pro-mode .ael-pro-shell{background:#0f1720!important;color:#eef2f6!important;border-radius:20px!important;box-shadow:0 8px 30px rgba(0,0,0,.22)!important}
-body.pro-mode .ael-pro-tabs{order:0!important;position:sticky!important;top:58px!important;bottom:auto!important;z-index:90!important;margin:0 0 14px!important;padding:7px 0 5px!important;background:#0f1720!important;border:0!important;box-shadow:none!important}
-body.pro-mode .ael-pro-head{order:1!important;background:#151f2b!important;border:1px solid #273545!important;border-radius:15px!important;padding:14px 15px!important;color:#eef2f6!important}
+body.pro-mode .ael-pro-tabs{position:relative!important;z-index:2!important;display:flex!important;align-items:center!important;gap:7px!important;overflow-x:auto!important;overflow-y:hidden!important;margin:0 auto 10px!important;padding:8px 4px!important;background:#0f1720!important;border:1px solid #273545!important;border-radius:14px!important;box-shadow:0 6px 20px rgba(0,0,0,.18)!important;scrollbar-width:none!important}
+body.pro-mode .ael-pro-tabs::-webkit-scrollbar{display:none!important}
+body.pro-mode .ael-pro-head{background:#151f2b!important;border:1px solid #273545!important;border-radius:15px!important;padding:14px 15px!important;color:#eef2f6!important}
 body.pro-mode .ael-pro-tabpanel{order:2!important}
 body.pro-mode .ael-pro-tab{background:#151f2b!important;color:#aeb9c5!important;border:1px solid #293646!important;border-radius:9px!important}
 body.pro-mode .ael-pro-tab.active{background:#e8edf2!important;color:#111827!important;border-color:#e8edf2!important}
@@ -195,7 +196,10 @@ body.pro-mode .ael-pro-shell .ael-pro-section,body.pro-mode .ael-pro-shell .ael-
 body.pro-mode .ael-pro-shell .ael-pro-table-wrap{border-color:#273545!important}
 body.pro-mode .ael-pro-shell .ael-pro-table th,body.pro-mode .ael-pro-shell .ael-pro-table td{border-color:#273545!important}
 body.pro-mode .ael-pro-shell .ael-pro-table th{background:#182331!important;color:#9eacba!important}
-@media(max-width:760px){body.pro-mode .ael-pro-tabs{top:51px!important;overflow-x:auto;padding-bottom:6px}.ael-pro-shell{padding:13px!important}}
+@media(max-width:760px){body.pro-mode .ael-pro-tabs{margin-bottom:10px;padding:6px 4px!important}.ael-pro-shell{padding:13px!important}}
+
+body.pro-mode .ael-pro-tab{flex:0 0 auto!important;min-height:42px!important;padding:9px 14px!important}
+@media(max-width:760px){body.pro-mode .ael-pro-tab{min-height:40px!important;padding:8px 13px!important;font-size:12px!important}}
 </style>
 </head><body><div class="ael-modebar"><div class="ael-brand">AEL</div><div class="ael-mode-switch"><button id="modeLite" class="active" onclick="setAELMode('lite')">Lite</button><button id="modePro" onclick="setAELMode('pro')">Pro</button></div></div><div id="ael-lite-root"><div class="wrap">
 <section class="ael-lite-hero">
@@ -218,16 +222,18 @@ body.pro-mode .ael-pro-shell .ael-pro-table th{background:#182331!important;colo
 <div class="card" id="market-scan-card"><div class="scan-head"><div><div class="section" style="margin-bottom:3px">🔭 AEL MARKET SCAN</div><div class="muted">主动发起｜全市场分板块扫描｜后台运行，不阻塞单股查询</div></div><div class="scan-actions"><button id="scanCancelBtn" class="scan-cancel" onclick="cancelMarketScan()">取消</button><button id="scanRefreshBtn" class="scan-filter" style="display:none" onclick="runMarketScan(true)">刷新</button><button id="scanBtn" class="scan-btn" onclick="runMarketScan(false)">开始扫描</button></div></div><div class="scan-filters"><button class="scan-filter active" data-market="us" onclick="toggleScanMarket(this)">美股</button><button class="scan-filter" data-market="hk" onclick="toggleScanMarket(this)">港股</button><button class="scan-filter" data-market="cn" onclick="toggleScanMarket(this)">A股</button></div><div class="muted" style="margin:6px 0 0 4px">美股：道琼斯 + 纳斯达克100 + 标普500｜港股：恒生指数｜A股：中证500 + 科创板</div><div class="scan-filters" style="margin-top:7px"><span class="muted" style="padding:8px 4px;font-weight:700">板块</span><div id="scanGroup" class="scan-group-buttons"><button class="scan-filter active" data-group="all" onclick="toggleScanGroup(this)">核心指数池</button><button class="scan-filter" data-group="semiconductors" onclick="toggleScanGroup(this)">半导体</button><button class="scan-filter" data-group="semiconductor_equipment" onclick="toggleScanGroup(this)">半导体设备</button><button class="scan-filter" data-group="software" onclick="toggleScanGroup(this)">软件</button><button class="scan-filter" data-group="banks" onclick="toggleScanGroup(this)">银行</button><button class="scan-filter" data-group="insurance" onclick="toggleScanGroup(this)">保险</button><button class="scan-filter" data-group="biotechnology" onclick="toggleScanGroup(this)">生物科技</button><button class="scan-filter" data-group="pharmaceuticals" onclick="toggleScanGroup(this)">制药</button></div></div><div id="scanStatus" class="status">默认扫描美股核心指数成分股；点击开始后运行。可切换港股恒生指数、A股中证500＋科创板。</div><div id="scanProgress"></div><div id="scanResults"></div></div>
 <div id="app"></div></div></div>
 <div id="ael-pro-root">
+  <div class="ael-pro-tabs">
+    <button class="ael-pro-tab active" data-pro-tab="overview" onclick="switchProTab('overview')">驾驶舱</button>
+    <button class="ael-pro-tab" data-pro-tab="universe" onclick="switchProTab('universe')">股票池</button>
+    <button class="ael-pro-tab" data-pro-tab="options" onclick="switchProTab('options')">期权</button>
+    <button class="ael-pro-tab" data-pro-tab="factor" onclick="switchProTab('factor')">因子</button>
+    <button class="ael-pro-tab" data-pro-tab="risk" onclick="switchProTab('risk')">风险</button>
+    <button class="ael-pro-tab" data-pro-tab="macro" onclick="switchProTab('macro')">宏观</button>
+    <button class="ael-pro-tab" data-pro-tab="treasury" onclick="switchProTab('treasury')">国债</button>
+    <button class="ael-pro-tab" data-pro-tab="expectation" onclick="switchProTab('expectation')">预期详情</button>
+    <button class="ael-pro-tab" data-pro-tab="backtest" onclick="switchProTab('backtest')">回测</button>
+  </div>
   <div class="ael-pro-shell">
-    <div class="ael-pro-tabs">
-      <button class="ael-pro-tab active" data-pro-tab="overview" onclick="switchProTab('overview')">驾驶舱</button>
-      <button class="ael-pro-tab" data-pro-tab="universe" onclick="switchProTab('universe')">股票池</button>
-      <button class="ael-pro-tab" data-pro-tab="options" onclick="switchProTab('options')">期权</button>
-      <button class="ael-pro-tab" data-pro-tab="factor" onclick="switchProTab('factor')">因子</button>
-      <button class="ael-pro-tab" data-pro-tab="risk" onclick="switchProTab('risk')">风险</button>
-      <button class="ael-pro-tab" data-pro-tab="macro" onclick="switchProTab('macro')">宏观</button><button class="ael-pro-tab" data-pro-tab="treasury" onclick="switchProTab('treasury')">国债</button><button class="ael-pro-tab" data-pro-tab="expectation" onclick="switchProTab('expectation')">预期详情</button>
-      <button class="ael-pro-tab" data-pro-tab="backtest" onclick="switchProTab('backtest')">回测</button>
-    </div>
     <div class="ael-pro-head">
       <div><div class="ael-pro-kicker">AEL PRO · 股票基本面驾驶舱</div><div class="ael-pro-title">AEL 全面分析</div><div class="ael-pro-desc">中文优先、结论优先。原 AEL 核心算法保持不变，ATS 与链上美股预期作为独立增强层。</div></div>
       <div class="ael-pro-pill">SAFE MODE · NO ORDER EXECUTION</div>
