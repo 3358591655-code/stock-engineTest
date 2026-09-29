@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
+from sec_cik_fallback import SEC_CIK_FALLBACK
 
 SEC_UA = os.getenv(
     "SEC_USER_AGENT",
@@ -1105,12 +1106,20 @@ def analyst_view(ticker, info=None):
 
 def sec_cik_for_ticker(ticker):
     global _SEC_TICKERS
+    sym=str(ticker or "").upper().strip()
+    # Cloud-safe offline fallback for common issuers. SEC remains the source of
+    # the actual filings/facts; this only avoids ticker-map 403 failures.
+    if sym in SEC_CIK_FALLBACK:
+        return SEC_CIK_FALLBACK[sym]
     if _SEC_TICKERS is None:
-        r = requests.get("https://www.sec.gov/files/company_tickers.json", headers={"User-Agent": SEC_UA}, timeout=12)
-        r.raise_for_status()
-        data = r.json()
-        _SEC_TICKERS = {str(v["ticker"]).upper(): str(v["cik_str"]).zfill(10) for v in data.values() if v.get("ticker")}
-    return _SEC_TICKERS.get(ticker.upper())
+        try:
+            r = requests.get("https://www.sec.gov/files/company_tickers.json", headers={"User-Agent": SEC_UA}, timeout=12)
+            r.raise_for_status()
+            data = r.json()
+            _SEC_TICKERS = {str(v["ticker"]).upper(): str(v["cik_str"]).zfill(10) for v in data.values() if v.get("ticker")}
+        except Exception:
+            _SEC_TICKERS = {}
+    return _SEC_TICKERS.get(sym)
 
 
 def _sec_fact(facts, tags):

@@ -20,6 +20,7 @@ import yfinance as yf
 
 from pro_whisper import analyze_whisper
 from pro_ats import ats_source
+from sec_cik_fallback import SEC_CIK_FALLBACK
 
 _CACHE = {}
 _LOCK = threading.Lock()
@@ -82,6 +83,13 @@ def _http(url, kind="text", timeout=7):
 
 
 def _sec_cik(symbol):
+    """Resolve CIK without making SEC ticker mapping a single point of failure."""
+    sym = str(symbol).upper().strip()
+    # Offline fallback first for common issuers. The actual filings/facts still
+    # come from SEC; this only supplies the stable identifier when mapping.json
+    # is blocked from a cloud IP.
+    if sym in SEC_CIK_FALLBACK:
+        return SEC_CIK_FALLBACK[sym], None
     now = time()
     with _SEC_LOCK:
         if _SEC_TICKER_CACHE.get("data") and now < _SEC_TICKER_CACHE.get("expires_at", 0):
@@ -91,7 +99,6 @@ def _sec_cik(symbol):
             if not data:
                 return None, err or "SEC ticker mapping unavailable"
             _SEC_TICKER_CACHE.update({"data": data, "expires_at": now + SEC_TTL})
-    sym = str(symbol).upper().strip()
     for row in (data or {}).values():
         if str(row.get("ticker", "")).upper() == sym:
             cik = str(row.get("cik_str") or "").zfill(10)
@@ -325,13 +332,19 @@ def _sec_guidance(symbol, target_period, target_earnings_date):
         "filing_date":None,"filing_url":None,"document_url":None,"period_end":None,
         "period_match":None,"eps_basis":None,"revenue_basis":None,"revenue_growth_low":None,"revenue_growth_high":None,"revenue_growth_basis":None,"revenue_growth_source_text":None,"revenue_growth_quantified":None,"revenue_guidance_text":None,"error":None,
     }
+    # Resolve the fiscal target before any provider call. A provider failure
+    # must never leave target_end unbound and must never take ATS down with it.
+    target_end=(target_period or {}).get("target_end") if isinstance(target_period,dict) else target_period
     rows, err = _sec_filing_rows(symbol, target_earnings_date)
     if err:
         out["error"]=err
         fallback=_transcript_guidance_fallback(symbol,target_end,target_earnings_date)
         return fallback or out
-    cik, _ = _sec_cik(symbol)
-    target_end=(target_period or {}).get("target_end") if isinstance(target_period,dict) else target_period
+    cik, cik_err = _sec_cik(symbol)
+    if not cik:
+        out["error"]=cik_err or "SEC CIK unavailable"
+        fallback=_transcript_guidance_fallback(symbol,target_end,target_earnings_date)
+        return fallback or out
     # Newest relevant earnings releases first. We inspect several because the
     # latest 8-K may be a correction/amendment without a guidance sentence.
     for row in rows[:10]:

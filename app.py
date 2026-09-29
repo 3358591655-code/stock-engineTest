@@ -198,7 +198,7 @@ def pro_guidance_ats(symbol: str):
     try:
         return analyze_guidance_ats(symbol)
     except Exception as exc:
-        return {'ok': False, 'symbol': symbol.upper(), 'independent': True, 'error': str(exc)[:220]}
+        return {'ok': False, 'symbol': symbol.upper(), 'independent': True, 'error': '独立研究层暂时不可用；原 AEL 数据链不受影响。'}
 
 @app.get('/api/pro/whisper/{symbol}')
 def pro_whisper(symbol: str):
