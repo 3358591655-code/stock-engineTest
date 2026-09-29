@@ -25,11 +25,12 @@ from pro_whisper_backtest import run_whisper_backtest
 from pro_fair_backtest import run_fair_backtest
 from pro_guidance_ats import analyze_guidance_ats
 from pro_guidance_backtest import run_guidance_backtest
+from pro_polymarket import analyze_polymarket
 from ael_treasury import analyze_treasury
 from asset_data import get_asset, get_asset_index, get_asset_news
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = '2.6.16-GUIDANCE-ATS-SIDECAR-ISOLATED'
+APP_VERSION = '2.6.34-CHINESE-AEL-COCKPIT'
 app = FastAPI(title='AEL 股票基本面驾驶舱', version=APP_VERSION)
 # Pro is an extension layer. It has independent routes and never changes Lite scan/core logic.
 app.include_router(pro_options_router)
@@ -199,6 +200,14 @@ def pro_guidance_ats(symbol: str):
         return analyze_guidance_ats(symbol)
     except Exception as exc:
         return {'ok': False, 'symbol': symbol.upper(), 'independent': True, 'error': '独立研究层暂时不可用；原 AEL 数据链不受影响。'}
+
+@app.get('/api/pro/polymarket/{symbol}')
+def pro_polymarket(symbol: str):
+    # Optional prediction-market sidecar. It never participates in AEL core math.
+    try:
+        return analyze_polymarket(symbol)
+    except Exception as exc:
+        return {'ok': False, 'symbol': symbol.upper(), 'available': False, 'reason': 'Polymarket 独立数据层暂时不可用。', 'error': str(exc)[:160]}
 
 @app.get('/api/pro/whisper/{symbol}')
 def pro_whisper(symbol: str):
