@@ -237,6 +237,23 @@ def _extract_revenue_candidates(text):
     return out
 
 
+def _extract_revenue_qualitative_candidates(text):
+    """Extract non-numeric quarterly revenue guidance without inventing a number.
+    Examples: down low single digits; down low to mid-single digits;
+    up mid-single digits.
+    """
+    patterns=[
+        r"(?:revenue|sales|total\s+(?:company\s+)?revenue).*?(?:expect|expects|outlook|guidance).*?(?:to\s+be\s+)?(?P<phrase>up|down)\s+(?P<band>low|mid|high)(?:\s+to\s+(?P<band2>low|mid|high))?[- ]single[- ]digits",
+        r"(?:revenue|sales|total\s+(?:company\s+)?revenue).*?(?P<phrase>up|down)\s+(?P<band>low|mid|high)(?:\s+to\s+(?P<band2>low|mid|high))?[- ]single[- ]digits",
+    ]
+    out=[]
+    for pat in patterns:
+        for m in re.finditer(pat,text,re.I|re.S):
+            ctx=text[max(0,m.start()-350):min(len(text),m.end()+350)]
+            out.append((m.group(0),ctx,m.start()))
+    return out
+
+
 def _extract_revenue_growth_candidates(text):
     """Extract management revenue YoY growth guidance such as +9% to +11%.
     This is still official guidance, but it is not a company-disclosed dollar range.
@@ -306,11 +323,13 @@ def _sec_guidance(symbol, target_period, target_earnings_date):
         "available":False,"eps_low":None,"eps_high":None,"revenue_low":None,"revenue_high":None,
         "source":"SEC EDGAR 8-K / earnings release","source_type":"official_filing",
         "filing_date":None,"filing_url":None,"document_url":None,"period_end":None,
-        "period_match":None,"eps_basis":None,"revenue_basis":None,"revenue_growth_low":None,"revenue_growth_high":None,"revenue_growth_basis":None,"revenue_growth_source_text":None,"revenue_growth_quantified":None,"error":None,
+        "period_match":None,"eps_basis":None,"revenue_basis":None,"revenue_growth_low":None,"revenue_growth_high":None,"revenue_growth_basis":None,"revenue_growth_source_text":None,"revenue_growth_quantified":None,"revenue_guidance_text":None,"error":None,
     }
     rows, err = _sec_filing_rows(symbol, target_earnings_date)
     if err:
-        out["error"]=err; return out
+        out["error"]=err
+        fallback=_transcript_guidance_fallback(symbol,target_end,target_earnings_date)
+        return fallback or out
     cik, _ = _sec_cik(symbol)
     target_end=(target_period or {}).get("target_end") if isinstance(target_period,dict) else target_period
     # Newest relevant earnings releases first. We inspect several because the
@@ -336,6 +355,7 @@ def _sec_guidance(symbol, target_period, target_earnings_date):
             eps_cands=_extract_eps_candidates(text)
             rev_cands=_extract_revenue_candidates(text)
             rev_growth_cands=_extract_revenue_growth_candidates(text)
+            rev_qual_cands=_extract_revenue_qualitative_candidates(text)
             # Require a quarter context. This prevents full-year guidance from
             # being displayed as a quarterly guide.
             eps_valid=[x for x in eps_cands if _quarter_context_ok(x[2])]
@@ -409,26 +429,37 @@ def _transcript_guidance_fallback(symbol, target_end=None, target_earnings_date=
     if not s or any(x in s for x in ('.hk','.ss','.sz')):
         return None
     slug=s.replace('.','-').replace('/','-')
-    idx_url=f'https://stockanalysis.com/stocks/{slug}/transcripts/'
-    idx,err=_http(idx_url,'text',8)
-    if not idx:
-        return None
-    links=[]
-    for href,label in re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',idx,re.I|re.S):
-        lab=_plain(label)
-        if not re.search(r'Earnings Call:\s*Q\d',lab,re.I):
+
+    # StockAnalysis is intentionally NOT a hard dependency.  It can return 403
+    # to cloud/server IPs, which used to leak directly into the AEL card.
+    # Prefer predictable public transcript pages and fail silently to the next
+    # provider.  These are cross-check sources only; SEC remains first.
+    now_year=datetime.now(timezone.utc).year
+    candidates=[]
+    for year in range(now_year, max(now_year-4, 2018), -1):
+        for q in (4,3,2,1):
+            candidates.append((
+                f'https://tickertrends.io/transcripts/{slug.upper()}/Q{q}-earnings-transcript-{year}',
+                f'Earnings Call: Q{q} {year} · TickerTrends'
+            ))
+            candidates.append((
+                f'https://goodmoat.com/stocks/{slug.lower()}/transcripts/{year}-year/{q}-quarter',
+                f'Earnings Call: Q{q} {year} · GoodMoat'
+            ))
+
+    seen=set()
+    for url,label in candidates:
+        if url in seen:
             continue
-        full=href if href.startswith('http') else 'https://stockanalysis.com'+href
-        links.append((full,lab))
-    seen=set(); links=[x for x in links if not (x[0] in seen or seen.add(x[0]))][:8]
-    for url,label in links:
-        body,berr=_http(url,'text',8)
+        seen.add(url)
+        body,berr=_http(url,'text',5)
         if not body: continue
         text=_plain(body)
         if len(text)<500: continue
         eps=[x for x in _extract_eps_candidates(text) if _quarter_context_ok(x[2])]
         rev=[x for x in _extract_revenue_candidates(text) if _quarter_context_ok(x[2])]
         growth=[x for x in _extract_revenue_growth_candidates(text) if _quarter_context_ok(x[2])]
+        qualitative=_extract_revenue_qualitative_candidates(text)
         def rank(c):
             ctx=c[2].lower(); score=0
             if target_end and _date_mentions_target(ctx,target_end): score+=100
@@ -440,7 +471,12 @@ def _transcript_guidance_fallback(symbol, target_end=None, target_earnings_date=
         e=eps[0] if eps and rank(eps[0])>=25 else None
         r=rev[0] if rev and rank(rev[0])>=25 else None
         g=growth[0] if growth and rank(growth[0])>=25 else None
-        if not (e or r or g): continue
+        qtext=None
+        if qualitative:
+            qs=sorted(qualitative,key=lambda x: (100 if target_end and _date_mentions_target(x[1],target_end) else 0)+(60 if 'next quarter' in x[1].lower() else 0)+(25 if any(k in x[1].lower() for k in ('guidance','outlook','expect')) else 0), reverse=True)
+            if qs and ((100 if target_end and _date_mentions_target(qs[0][1],target_end) else 0)+(60 if 'next quarter' in qs[0][1].lower() else 0)+(25 if any(k in qs[0][1].lower() for k in ('guidance','outlook','expect')) else 0))>=25:
+                qtext=qs[0][0]
+        if not (e or r or g or qtext): continue
         return {
             'available':True,
             'eps_low':e[0] if e else None,'eps_high':e[1] if e else None,
@@ -449,6 +485,7 @@ def _transcript_guidance_fallback(symbol, target_end=None, target_earnings_date=
             'revenue_growth_basis':'YoY growth guidance' if g else None,
             'revenue_growth_source_text':g[2] if g else None,
             'revenue_growth_quantified':_quantify_revenue_growth_guidance(symbol,target_end,g[0],g[1]) if g else None,
+            'revenue_guidance_text':qtext,
             'filing_date':None,'filing_url':None,'document_url':url,
             'period_end':target_end,'period_match':'transcript_target_period' if target_end else 'transcript_forward_quarter',
             'eps_basis':'management disclosed range (transcript)' if e else None,

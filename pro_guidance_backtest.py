@@ -57,38 +57,22 @@ def _safe_pct(a, b):
     return (a / b - 1.0) * 100.0
 
 
-def _stockanalysis_index(symbol):
-    s = str(symbol or '').strip().lower()
-    if not s or any(x in s for x in ('.hk', '.ss', '.sz')):
-        return None, '仅支持有公开电话会文字稿的美国股票'
+def _transcript_candidates(symbol, years_back=10):
+    s = str(symbol or '').strip().upper()
+    if not s or any(x in s for x in ('.HK', '.SS', '.SZ')):
+        return []
+    now_year = datetime.now(timezone.utc).year
     slug = s.replace('.', '-').replace('/', '-')
-    url = f'https://stockanalysis.com/stocks/{slug}/transcripts/'
-    text, err = _http(url, 'text', 8)
-    if not text:
-        return None, err or '电话会文字稿索引不可用'
-    return text, None
-
-
-def _transcript_links(index_html):
-    out = []
-    # StockAnalysis exposes transcript URLs in ordinary anchor tags. Keep only
-    # earnings-call links, and retain newest first as presented by the page.
-    for href, label in re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', index_html or '', re.I | re.S):
-        lab = _plain(label)
-        if not re.search(r'Earnings Call:\s*Q\d', lab, re.I):
-            continue
-        full = href if href.startswith('http') else 'https://stockanalysis.com' + href
-        # quarter/year from link text, e.g. Earnings Call: Q3 2026
-        m = re.search(r'Earnings Call:\s*Q([1-4])\s+(20\d{2})', lab, re.I)
-        if not m:
-            continue
-        out.append({'url': full, 'label': lab, 'quarter': int(m.group(1)), 'year': int(m.group(2))})
-    seen = set(); uniq = []
-    for x in out:
-        if x['url'] in seen:
-            continue
-        seen.add(x['url']); uniq.append(x)
-    return uniq
+    out=[]
+    for year in range(now_year, max(now_year-years_back, 2010), -1):
+        for q in (4,3,2,1):
+            out.append({'url':f'https://tickertrends.io/transcripts/{slug}/Q{q}-earnings-transcript-{year}',
+                        'label':f'Earnings Call: Q{q} {year} · TickerTrends',
+                        'quarter':q,'year':year,'provider':'TickerTrends'})
+            out.append({'url':f'https://goodmoat.com/stocks/{slug.lower()}/transcripts/{year}-year/{q}-quarter',
+                        'label':f'Earnings Call: Q{q} {year} · GoodMoat',
+                        'quarter':q,'year':year,'provider':'GoodMoat'})
+    return out
 
 
 def _extract_guidance_from_transcript(text, target_end=None):
@@ -279,27 +263,37 @@ def run_guidance_backtest(symbol, quarters=20):
     with _LOCK:
         c=_CACHE.get(cache_key)
         if c and now-c[0] < TTL: return c[1]
-    index, err=_stockanalysis_index(symbol)
-    if not index:
-        return {'ok':True,'symbol':symbol,'status':'unavailable','valid_samples':0,'rows':[],'score':None,'reason':err or '暂无电话会文字稿来源'}
-    links=_transcript_links(index)
+    links=_transcript_candidates(symbol, years_back=10)
     if not links:
-        return {'ok':True,'symbol':symbol,'status':'insufficient','valid_samples':0,'rows':[],'score':None,'reason':'未找到可用财报电话会文字稿'}
+        return {'ok':True,'symbol':symbol,'status':'unavailable','valid_samples':0,'rows':[],'score':None,'reason':'暂无可用电话会文字稿来源'}
     actuals, aerr=_companyfacts_quarters(symbol)
     if not actuals:
         return {'ok':True,'symbol':symbol,'status':'unavailable','valid_samples':0,'rows':[],'score':None,'reason':aerr or 'SEC实际财报数据不可用'}
     rows=[]
     # Process newest first, but return chronological rows for readability.
-    for link in links[:max(quarters*2, 20)]:
-        body, berr=_http(link['url'],'text',8)
-        if not body: continue
+    seen_periods=set()
+    for link in links:
+        period_key=(link['year'],link['quarter'])
+        if period_key in seen_periods:
+            continue
+        body, berr=_http(link['url'],'text',5)
+        if not body:
+            continue
+        seen_periods.add(period_key)
         # Call date: use page publication metadata if available; fallback to
         # the actual quarter calendar from title is not safe, so use the first
         # ISO date visible near the page title.
         m=re.search(r'(20\d{2}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},\s+20\d{2})', _plain(body)[:8000], re.I)
-        if not m: continue
-        try: call_date=pd.Timestamp(m.group(1)).normalize()
-        except Exception: continue
+        if m:
+            try: call_date=pd.Timestamp(m.group(1)).normalize()
+            except Exception: call_date=None
+        else:
+            # Transcript providers expose quarter/year in the URL even when
+            # page metadata is omitted. Use the quarter-end month only as a
+            # temporal ordering fallback; actual fiscal matching still comes
+            # from SEC Company Facts below.
+            q_end_month={1:1,2:4,3:7,4:10}[int(link['quarter'])]
+            call_date=pd.Timestamp(year=int(link['year']),month=q_end_month,day=28)
         guidance=_extract_guidance_from_transcript(body)
         if not guidance: continue
         actual=_next_actual(actuals, call_date)
@@ -308,7 +302,7 @@ def run_guidance_backtest(symbol, quarters=20):
         actual2=dict(actual)
         if actual.get('revenue') is not None and prior and prior.get('revenue'):
             actual2['revenue_growth_pct']=_safe_pct(actual['revenue'],prior['revenue'])
-        row={'guidance':guidance,'actual':actual2,'call_date':call_date.date().isoformat(),'target_period':actual.get('end'),'transcript_url':link['url'],'transcript_label':link['label'],'source_type':'transcript_crosscheck'}
+        row={'guidance':guidance,'actual':actual2,'call_date':call_date.date().isoformat(),'target_period':actual.get('end'),'transcript_url':link['url'],'transcript_label':link['label'],'transcript_provider':link.get('provider'),'source_type':'transcript_crosscheck'}
         # Keep only rows with at least one evaluable metric.
         if (guidance.get('revenue_growth_low') is not None and actual2.get('revenue_growth_pct') is not None) or (guidance.get('revenue_low') is not None and actual2.get('revenue') is not None) or (guidance.get('eps_low') is not None and actual2.get('eps') is not None):
             rows.append(row)

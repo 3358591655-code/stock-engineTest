@@ -90,7 +90,13 @@ def _historical_ats_signal(weeks, event_date, close):
         except Exception:pass
     if not eligible:return None
     week_ts,w=eligible[-1]
-    if (ed-week_ts).days>14:return None
+    # FINRA weeklySummary is keyed by week-start, while earnings dates are
+    # event dates.  Use the latest completed/pre-event week instead of requiring
+    # an exact calendar match.  A strict 14-day gate can incorrectly turn a
+    # valid pre-event observation into zero common samples when a week is absent.
+    staleness_days = (ed-week_ts).days
+    if staleness_days < 0 or staleness_days > 28:
+        return None
 
     # ATS intensity: current share quantity versus the preceding 8 weeks.
     hist=[_finite(x[1].get("ats_shares")) for x in eligible[:-1]]
@@ -123,6 +129,7 @@ def _historical_ats_signal(weeks, event_date, close):
     score=50+50*_clamp(signed,-1,1)
     return {
         "week":week_ts.date().isoformat(),
+        "ats_data_staleness_days":staleness_days,
         "ats_share_pct":share,
         "ats_z":z,
         "ats_share_change_pct":change,
@@ -208,7 +215,15 @@ def run_fair_backtest(symbol: str, periods: int = 8) -> Dict[str,Any]:
                 rr[f"{m}_ael_improvement_pct"]=_improvement(rr.get(f"{m}_consensus_error_pct"),rr.get(f"{m}_ael_error_pct"))
                 rr[f"{m}_ats_improvement_pct"]=_improvement(rr.get(f"{m}_consensus_error_pct"),rr.get(f"{m}_ats_error_pct"))
             candidates.append(rr)
-        candidates=sorted(candidates,key=lambda r:r.get("event_date") or "")[-periods:]
+
+        # One row per actual earnings event.  This prevents duplicate Yahoo
+        # snapshots for the same event from inflating the comparison.
+        deduped={}
+        for rr in candidates:
+            key=str(rr.get("event_date") or "")[:10]
+            if key and key not in deduped:
+                deduped[key]=rr
+        candidates=sorted(deduped.values(),key=lambda r:r.get("event_date") or "")[-periods:]
         if not candidates:
             return {"ok":True,"symbol":symbol,"status":"insufficient","periods_requested":periods,"valid_samples":0,"reason":"没有同时具备卖方历史预期、实际财报和财报前 ATS 数据的共同财报季度。","rows":[]}
 
@@ -230,6 +245,12 @@ def run_fair_backtest(symbol: str, periods: int = 8) -> Dict[str,Any]:
             "ael_score":ael_score,"ats_score":ats_score,"conclusion":conclusion,
             "eps":eps,"revenue":rev,
             "rows":candidates,
+            "matching_diagnostics": {
+                "ael_event_rows_considered": len(ael_rows),
+                "common_events_found": len(candidates),
+                "ats_matching_rule": "latest FINRA pre-event weekStartDate <= earnings event date; maximum 28 calendar days stale; no post-event ATS data used",
+                "ats_week_count": len(weeks),
+            },
             "fair_rule":"相同财报事件 + 相同信息截止点 + 卖方共识作为基准 + 同一绝对误差公式；分数仅用于AEL与ATS横向比较。",
             "point_in_time":"AEL使用历史公开估计重演；ATS只使用财报前ATS周度活动与财报前价格方向，不使用财报后的数据。",
             "ats_limitation":"当前免费ATS历史为滚动12个月；历史期权快照不可验证，因此公平ATS回放不使用今天的期权数据倒填过去。",
