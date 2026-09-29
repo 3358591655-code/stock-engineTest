@@ -355,6 +355,73 @@ def _ats_whisper_score(ats, whisper_data):
     return {"status":"inferred","score":round(_clamp(attention,0,100),1) if attention is not None else None,"direction":direction,"confidence":confidence,"ats_share_pct":share,"ats_share_change_pct":change,"ats_volume_z":z,"decomposition":[{"factor":n,"normalized":round(v,3),"weight":w} for n,v,w in parts],"note":"ATS只证明场外交易活动/异常度，不提供可靠买卖方向；方向参考来自独立的期权/价格定位层。"}
 
 
+
+def _ats_version_expectation(consensus, aw, kind):
+    """Independent ATS-version model estimate.
+
+    ATS does not disclose reliable buy/sell direction.  Therefore this is NOT
+    raw ATS data: ATS activity supplies intensity, while the independent
+    price/options positioning already used by the ATS sidecar supplies the
+    directional sign.  The adjustment is deliberately capped and is exposed
+    as Model-Implied.
+    """
+    c = _finite(consensus)
+    score = _finite((aw or {}).get("score"))
+    direction = str((aw or {}).get("direction") or "")
+    if c is None or score is None:
+        return {"value": None, "adjustment_pct": None, "status": "unavailable", "method": "ATS intensity + independent market direction"}
+    sign = 1 if "正" in direction else -1 if "负" in direction else 0
+    intensity = _clamp(abs(score - 50.0) / 50.0, 0, 1)
+    # Conservative, capped model adjustment.  It is intentionally smaller
+    # than the original AEL Market-Implied layer so the two remain distinct.
+    cap = 2.5 if kind == "revenue" else 4.0
+    adj = sign * intensity * cap
+    return {
+        "value": c * (1 + adj / 100.0),
+        "adjustment_pct": adj,
+        "status": "inferred",
+        "method": "ATS activity intensity + independent price/options direction; capped model adjustment",
+        "label": "ATS Model-Implied",
+    }
+
+
+def _four_layer_expectation(whisper, ss, gw, aw):
+    """Build the four parallel expectation layers requested by AEL UI."""
+    rev_cons = _finite(ss.get("revenue")); eps_cons = _finite(ss.get("eps"))
+    ats_rev = _ats_version_expectation(rev_cons, aw, "revenue")
+    ats_eps = _ats_version_expectation(eps_cons, aw, "eps")
+    return {
+        "sell_side_official": {
+            "revenue": rev_cons, "eps": eps_cons,
+            "label": "Sell-side Consensus / 卖方正版预期", "status": "observed" if (rev_cons is not None or eps_cons is not None) else "unavailable"
+        },
+        "ael_buy_side_dark": {
+            "revenue": gw.get("revenue"), "eps": gw.get("eps"),
+            "label": "AEL Buy-Side Dark Expectation / AEL买方暗盘预期",
+            "status": gw.get("status", "unavailable"),
+            "revenue_gap_vs_sell_side_pct": gw.get("revenue_gap_vs_sell_side_pct"),
+            "eps_gap_vs_sell_side_pct": gw.get("eps_gap_vs_sell_side_pct"),
+            "method": gw.get("method")
+        },
+        "ats_version": {
+            "revenue": ats_rev.get("value"), "eps": ats_eps.get("value"),
+            "label": "ATS Version Expectation / ATS版本预期",
+            "status": "inferred" if (ats_rev.get("value") is not None or ats_eps.get("value") is not None) else "unavailable",
+            "revenue_adjustment_pct": ats_rev.get("adjustment_pct"),
+            "eps_adjustment_pct": ats_eps.get("adjustment_pct"),
+            "method": ats_rev.get("method")
+        },
+        "ael_implied": {
+            "revenue": (whisper.get("revenue") or {}).get("implied"),
+            "eps": (whisper.get("eps") or {}).get("implied"),
+            "label": "AEL Market-Implied / AEL隐含预期",
+            "status": "inferred" if ((whisper.get("revenue") or {}).get("implied") is not None or (whisper.get("eps") or {}).get("implied") is not None) else "unavailable",
+            "revenue_pricein_pct": (whisper.get("revenue") or {}).get("pricein_pct"),
+            "eps_pricein_pct": (whisper.get("eps") or {}).get("pricein_pct"),
+            "method": "Original AEL Whisper Market-Implied layer; unchanged"
+        }
+    }
+
 def _temperature(ats, whisper_data, days):
     vals=[]
     if ats.get("available"):
@@ -468,6 +535,7 @@ def analyze_guidance_ats(symbol: str):
         eps_g=_guidance_whisper((whisper.get("eps") or {}),guidance,whisper.get("fundamental_nowcast") or {},whisper.get("historical_surprise") or {},"eps")
         rev_g=_guidance_whisper((whisper.get("revenue") or {}),guidance,whisper.get("fundamental_nowcast") or {},whisper.get("historical_surprise") or {},"revenue")
         aw=_ats_whisper_score(ats,whisper); days=_finite(whisper.get("days_to_earnings")); temp=_temperature(ats,whisper,int(days) if days is not None else None); anomaly=_anomaly(ats); bt=_ats_backtest(symbol,ats)
+        four_layer=_four_layer_expectation(whisper, {"revenue":rev_cons,"eps":eps_cons}, {"revenue":rev_g["value"],"eps":eps_g["value"],"status":"inferred" if eps_g["value"] is not None or rev_g["value"] is not None else "unavailable","revenue_gap_vs_sell_side_pct":_gap_pct(rev_g["value"],rev_cons),"eps_gap_vs_sell_side_pct":_gap_pct(eps_g["value"],eps_cons),"method":"Management Guidance-centered independent blend: official management guidance midpoint + Sell-side Consensus + Fundamental Nowcast + small revision/history adjustments."}, aw)
         result={
             "ok":True,"symbol":symbol,"as_of":datetime.now(timezone.utc).isoformat(),"independent":True,
             "sell_side":{"eps":eps_cons,"revenue":rev_cons,"earnings_date":target_earnings_date,"days_to_earnings":whisper.get("days_to_earnings")},
@@ -481,6 +549,7 @@ def analyze_guidance_ats(symbol: str):
                 "method":"Management Guidance-centered independent blend: official management guidance midpoint + Sell-side Consensus + Fundamental Nowcast + small revision/history adjustments.",
             },
             "ats":ats,"ats_whisper":aw,"ats_backtest":bt,"anomaly_scanner":anomaly,"expectation_temperature":temp,
+            "four_layer_expectation":four_layer,
             "comparison":{"guidance_vs_sell_side":"高于" if eps_g["value"] is not None and eps_cons is not None and eps_g["value"]>eps_cons else ("低于" if eps_g["value"] is not None and eps_cons is not None and eps_g["value"]<eps_cons else "无法判断"),"ats_direction":aw.get("direction"),"ats_vs_guidance":"独立第二意见，不覆盖Guidance Whisper"},
             "method_note":"本模块是独立研究层。管理层指引只接受SEC EDGAR 8-K/正式业绩发布中的可验证季度指引；未能严格匹配目标财季时显示暂无数据。ATS使用独立pro_ats.py，原AEL Whisper与pro_expectation.py不被修改。",
         }
