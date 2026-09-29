@@ -175,7 +175,10 @@ def _document_links(index_html, cik, accession):
 
 def _quarter_context_ok(context):
     c = context.lower()
-    has_quarter = bool(re.search(r"\b(?:next|current|upcoming|first|second|third|fourth|1st|2nd|3rd|4th|fiscal)\s+quarter\b|\bquarter ending\b|\bthree months\b", c))
+    # Issuers commonly say "September quarter", "June quarter", etc.
+    # Those are fiscal-quarter references and must pass the same lock.
+    month_q = r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+quarter\b"
+    has_quarter = bool(re.search(r"\b(?:next|current|upcoming|first|second|third|fourth|1st|2nd|3rd|4th|fiscal)\s+quarter\b|\bquarter ending\b|\bthree months\b|"+month_q, c))
     annual_only = bool(re.search(r"\bfull[- ]year\b|\bfiscal year\b|\byear ending\b", c)) and not has_quarter
     return has_quarter and not annual_only
 
@@ -186,8 +189,15 @@ def _date_mentions_target(text, target_end):
     try:
         d = pd.Timestamp(target_end)
         names = [d.strftime("%B %Y"), d.strftime("%b %Y"), d.strftime("%m/%d/%Y"), d.strftime("%-m/%-d/%Y")]
-        # Windows hosts may not support %-m; the first three are enough on Linux.
-        return any(x.lower() in text.lower() for x in names)
+        low=text.lower()
+        if any(x.lower() in low for x in names):
+            return True
+        # Earnings releases often identify the target only as "September quarter"
+        # rather than printing the exact period-end date. The target fiscal month
+        # is still a valid quarter-lock signal when the filing itself is the next-quarter
+        # earnings release and is temporally before the target earnings date.
+        month=d.strftime("%B").lower()
+        return bool(re.search(r"\b"+re.escape(month)+r"\s+quarter\b", low))
     except Exception:
         return False
 
@@ -227,13 +237,76 @@ def _extract_revenue_candidates(text):
     return out
 
 
+def _extract_revenue_growth_candidates(text):
+    """Extract management revenue YoY growth guidance such as +9% to +11%.
+    This is still official guidance, but it is not a company-disclosed dollar range.
+    """
+    patterns = [
+        r"(?:revenue|sales|total\s+(?:company\s+)?revenue).*?(?:grow|growth).*?(?:between|from)\s+([+-]?\d+(?:\.\d+)?)\s*%\s*(?:and|to|-|–)\s*([+-]?\d+(?:\.\d+)?)\s*%",
+        r"(?:revenue|sales|total\s+(?:company\s+)?revenue).*?(?:grow|growth).*?([+-]?\d+(?:\.\d+)?)\s*%\s*(?:to|-|–)\s*([+-]?\d+(?:\.\d+)?)\s*%",
+    ]
+    out=[]
+    for pat in patterns:
+        for m in re.finditer(pat, text, re.I|re.S):
+            lo,hi=_finite(m.group(1)),_finite(m.group(2))
+            if lo is None or hi is None or hi < lo or abs(lo)>100 or abs(hi)>100:
+                continue
+            ctx=text[max(0,m.start()-350):min(len(text),m.end()+350)]
+            out.append((lo,hi,ctx,m.start()))
+    return out
+
+
+def _yahoo_quarter_revenue(symbol, target_end):
+    """Find the closest prior-year same-fiscal-quarter revenue from Yahoo quarterly financials.
+    Used only to quantify an official percentage guidance; it never changes original Whisper.
+    """
+    try:
+        t=yf.Ticker(symbol)
+        df=getattr(t,"quarterly_income_stmt",None)
+        if df is None or df.empty:
+            df=t.quarterly_financials
+        if df is None or df.empty or not target_end:
+            return None, None
+        rows=[]
+        for dt in list(df.columns):
+            rev=None
+            for k in ("Total Revenue","Operating Revenue"):
+                if k in df.index:
+                    rev=_finite(df.loc[k,dt])
+                    if rev is not None: break
+            if rev is not None:
+                d=pd.Timestamp(dt).normalize()
+                rows.append((d,rev))
+        if not rows: return None,None
+        target=pd.Timestamp(target_end).normalize()
+        prior=target-pd.DateOffset(years=1)
+        # Same fiscal quarter usually has the closest period end around prior year.
+        d,rev=min(rows,key=lambda x: abs((x[0]-prior).days))
+        if abs((d-prior).days)>100:
+            return None,None
+        return rev,d.date().isoformat()
+    except Exception:
+        return None,None
+
+
+def _quantify_revenue_growth_guidance(symbol, target_end, growth_low, growth_high):
+    base,base_period=_yahoo_quarter_revenue(symbol,target_end)
+    if base is None:
+        return {"revenue_low":None,"revenue_high":None,"base_revenue":None,"base_period":base_period,"status":"unavailable"}
+    return {
+        "revenue_low":base*(1+growth_low/100.0),
+        "revenue_high":base*(1+growth_high/100.0),
+        "base_revenue":base,"base_period":base_period,"status":"derived"
+    }
+
+
 def _sec_guidance(symbol, target_period, target_earnings_date):
     """Return only official, quarter-matched management guidance."""
     out={
         "available":False,"eps_low":None,"eps_high":None,"revenue_low":None,"revenue_high":None,
         "source":"SEC EDGAR 8-K / earnings release","source_type":"official_filing",
         "filing_date":None,"filing_url":None,"document_url":None,"period_end":None,
-        "period_match":None,"eps_basis":None,"revenue_basis":None,"error":None,
+        "period_match":None,"eps_basis":None,"revenue_basis":None,"revenue_growth_low":None,"revenue_growth_high":None,"revenue_growth_basis":None,"revenue_growth_source_text":None,"revenue_growth_quantified":None,"error":None,
     }
     rows, err = _sec_filing_rows(symbol, target_earnings_date)
     if err:
@@ -262,13 +335,16 @@ def _sec_guidance(symbol, target_period, target_earnings_date):
                 continue
             eps_cands=_extract_eps_candidates(text)
             rev_cands=_extract_revenue_candidates(text)
+            rev_growth_cands=_extract_revenue_growth_candidates(text)
             # Require a quarter context. This prevents full-year guidance from
             # being displayed as a quarterly guide.
             eps_valid=[x for x in eps_cands if _quarter_context_ok(x[2])]
             rev_valid=[x for x in rev_cands if _quarter_context_ok(x[2])]
+            rev_growth_valid=[x for x in rev_growth_cands if _quarter_context_ok(x[2])]
             target_hit=_date_mentions_target(text,target_end)
             next_q_eps=[x for x in eps_valid if re.search(r"\bnext\s+quarter\b", x[2], re.I)]
             next_q_rev=[x for x in rev_valid if re.search(r"\bnext\s+quarter\b", x[2], re.I)]
+            next_q_rev_growth=[x for x in rev_growth_valid if re.search(r"\bnext\s+quarter\b", x[2], re.I)]
             if target_hit:
                 period_match="target_period_date"
             elif next_q_eps or next_q_rev:
@@ -276,13 +352,14 @@ def _sec_guidance(symbol, target_period, target_earnings_date):
                 # issuer does not print an exact period-end date is an explicit
                 # 'next quarter' statement in the earnings release.
                 eps_valid, rev_valid = next_q_eps, next_q_rev
+                rev_growth_valid = next_q_rev_growth
                 period_match="explicit_next_quarter"
             else:
                 # Do not accept 'current quarter' or a generic 'quarter' here:
                 # those can refer to the just-reported period and would violate
                 # AEL's fiscal-period lock.
                 continue
-            if not eps_valid and not rev_valid:
+            if not eps_valid and not rev_valid and not rev_growth_valid:
                 continue
             # Prefer candidates whose context actually mentions next/current
             # quarter; otherwise first quarter-context match is used.
@@ -291,16 +368,22 @@ def _sec_guidance(symbol, target_period, target_earnings_date):
                 return (100 if target_hit else 0) + (20 if "next quarter" in ctx else 0) + (10 if "outlook" in ctx or "guidance" in ctx else 0)
             eps=sorted(eps_valid,key=rank,reverse=True)[0] if eps_valid else None
             rev=sorted(rev_valid,key=rank,reverse=True)[0] if rev_valid else None
-            if not eps and not rev:
+            rev_growth=sorted(rev_growth_valid,key=rank,reverse=True)[0] if rev_growth_valid else None
+            if not eps and not rev and not rev_growth:
                 continue
+            qgrowth=_quantify_revenue_growth_guidance(symbol,target_end,rev_growth[0],rev_growth[1]) if rev_growth else {"status":"unavailable"}
             out.update({
                 "available":True,
                 "eps_low":eps[0] if eps else None,"eps_high":eps[1] if eps else None,
-                "revenue_low":rev[0] if rev else None,"revenue_high":rev[1] if rev else None,
+                "revenue_low":rev[0] if rev else qgrowth.get("revenue_low"),"revenue_high":rev[1] if rev else qgrowth.get("revenue_high"),
+                "revenue_growth_low":rev_growth[0] if rev_growth else None,"revenue_growth_high":rev_growth[1] if rev_growth else None,
+                "revenue_growth_basis":"YoY growth guidance" if rev_growth else None,
+                "revenue_growth_source_text":rev_growth[2] if rev_growth else None,
+                "revenue_growth_quantified":qgrowth if rev_growth else None,
                 "filing_date":row["filing_date"],"filing_url":filing_url,"document_url":doc_url,
                 "period_end":target_end,"period_match":period_match,
                 "eps_basis":"management disclosed range" if eps else None,
-                "revenue_basis":"management disclosed range" if rev else None,
+                "revenue_basis":"management disclosed range" if rev else ("AEL quantified from official management YoY growth guidance" if rev_growth and qgrowth.get("status")=="derived" else None),
                 "error":None,
             })
             return out
@@ -317,7 +400,15 @@ def _guidance_whisper(consensus, guidance, nowcast, revisions, kind):
     if rev is None: rev=_finite((consensus or {}).get("revision_7d_pct"))
     hist_bias=_finite((revisions or {}).get(f"{kind}_bias_pct"))
     if g is None:
-        return {"value":None,"components":[],"status":"unavailable","reason":"未获取到本财季可验证的管理层公开指引"}
+        # AEL Buy-Side may still form an independent model estimate when management
+        # does not publish a numeric metric. This is explicitly NOT company guidance.
+        comps=[]
+        if c is not None: comps.append(("卖方Consensus",c,0.65))
+        if n is not None: comps.append(("基本面Nowcast",n,0.35))
+        if not comps:
+            return {"value":None,"components":[],"status":"unavailable","reason":"无可验证管理层数值指引，且缺少足够公开数据建立AEL买方模型"}
+        sw=sum(w for _,_,w in comps); value=sum(v*w for _,v,w in comps)/sw
+        return {"value":value,"components":comps,"status":"inferred_no_direct_guidance","reason":"本财季未识别到管理层明确数值指引；AEL买方预期仅由卖方Consensus与基本面Nowcast独立推导，不冒充公司Guidance。","adjustments":[]}
     comps=[]
     if g is not None: comps.append(("管理层Guidance中值",g,0.55))
     if c is not None: comps.append(("卖方Consensus",c,0.25))
