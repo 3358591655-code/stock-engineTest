@@ -4,6 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import os
 import re
+import hashlib
+import secrets
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
@@ -125,6 +127,85 @@ def index():
 @app.get('/MP_verify_x2UfOVkM6H5YeLF2.txt')
 def wechat_verify():
     return PlainTextResponse('x2UfOVkM6H5YeLF2')
+
+# WeChat JS-SDK signing layer. Isolated from all AEL stock/Pro logic.
+# AppSecret is read only from Railway environment variables and is never returned.
+_WECHAT_TOKEN_CACHE = {'access_token': None, 'expires_at': 0.0}
+_WECHAT_TICKET_CACHE = {'jsapi_ticket': None, 'expires_at': 0.0}
+_WECHAT_LOCK = threading.Lock()
+
+def _wechat_appid():
+    return (os.getenv('WECHAT_APPID') or '').strip()
+
+def _wechat_appsecret():
+    return (os.getenv('WECHAT_APPSECRET') or '').strip()
+
+def _wechat_get_access_token():
+    appid = _wechat_appid()
+    secret = _wechat_appsecret()
+    if not appid or not secret:
+        raise RuntimeError('微信环境变量未配置')
+    now = time()
+    if _WECHAT_TOKEN_CACHE['access_token'] and now < _WECHAT_TOKEN_CACHE['expires_at']:
+        return _WECHAT_TOKEN_CACHE['access_token']
+    with _WECHAT_LOCK:
+        now = time()
+        if _WECHAT_TOKEN_CACHE['access_token'] and now < _WECHAT_TOKEN_CACHE['expires_at']:
+            return _WECHAT_TOKEN_CACHE['access_token']
+        resp = requests.get(
+            'https://api.weixin.qq.com/cgi-bin/token',
+            params={'grant_type': 'client_credential', 'appid': appid, 'secret': secret},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        token = data.get('access_token')
+        if not token:
+            raise RuntimeError(f"微信 access_token 获取失败：{data.get('errcode')} {data.get('errmsg', '')}")
+        _WECHAT_TOKEN_CACHE.update(access_token=token, expires_at=now + max(60, int(data.get('expires_in', 7200)) - 300))
+        return token
+
+def _wechat_get_jsapi_ticket():
+    now = time()
+    if _WECHAT_TICKET_CACHE['jsapi_ticket'] and now < _WECHAT_TICKET_CACHE['expires_at']:
+        return _WECHAT_TICKET_CACHE['jsapi_ticket']
+    with _WECHAT_LOCK:
+        now = time()
+        if _WECHAT_TICKET_CACHE['jsapi_ticket'] and now < _WECHAT_TICKET_CACHE['expires_at']:
+            return _WECHAT_TICKET_CACHE['jsapi_ticket']
+        token = _wechat_get_access_token()
+        resp = requests.get(
+            'https://api.weixin.qq.com/cgi-bin/ticket/getticket',
+            params={'access_token': token, 'type': 'jsapi'},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        ticket = data.get('ticket')
+        if data.get('errcode') != 0 or not ticket:
+            raise RuntimeError(f"微信 jsapi_ticket 获取失败：{data.get('errcode')} {data.get('errmsg', '')}")
+        _WECHAT_TICKET_CACHE.update(jsapi_ticket=ticket, expires_at=now + max(60, int(data.get('expires_in', 7200)) - 300))
+        return ticket
+
+@app.get('/api/wechat/config')
+def wechat_config(url: str = Query(..., min_length=1, max_length=2048)):
+    # Hash fragments are never included in the official JS-SDK signature.
+    page_url = url.split('#', 1)[0]
+    try:
+        ticket = _wechat_get_jsapi_ticket()
+        nonce_str = secrets.token_hex(8)
+        timestamp = int(time())
+        raw = f'jsapi_ticket={ticket}&noncestr={nonce_str}&timestamp={timestamp}&url={page_url}'
+        signature = hashlib.sha1(raw.encode('utf-8')).hexdigest()
+        return {
+            'ok': True,
+            'appId': _wechat_appid(),
+            'timestamp': timestamp,
+            'nonceStr': nonce_str,
+            'signature': signature,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'微信 JS-SDK 配置获取失败：{str(exc)[:180]}')
 
 @app.get('/api/health')
 def health():
