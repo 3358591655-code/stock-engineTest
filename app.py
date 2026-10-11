@@ -30,10 +30,10 @@ from ael_treasury import analyze_treasury
 from asset_data import get_asset, get_asset_index, get_asset_news
 from pro_gravity_data import proxy_data_status, proxy_history, exploratory_backtest
 from pro_gravity_year_backtest import year_forward_performance
-from pro_gravity_live import automatic_dashboard, automatic_history, automatic_year_backtest
+from pro_gravity_live import automatic_dashboard, automatic_history, automatic_year_backtest, charter_theory_history
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = '2.6.43-STRICT-AUTO-GRAVITY'
+APP_VERSION = '2.6.46-CHARTER-THEORY-TRENDS'
 app = FastAPI(title='AEL 股票基本面驾驶舱', version=APP_VERSION)
 # Pro is an extension layer. It has independent routes and never changes Lite scan/core logic.
 app.include_router(pro_options_router)
@@ -171,6 +171,12 @@ def pro_gravity_automatic_history(
     refresh: bool = Query(False),
 ):
     return automatic_history(index=index, limit=limit, force=refresh)
+
+
+@app.get('/api/pro/gravity/charter-theory/history')
+def pro_gravity_charter_theory_history(limit: int = Query(320, ge=40, le=600), refresh: bool = Query(False)):
+    """Long-run history for Q/V = M2/P and 1/P = Q/(M2*V)."""
+    return charter_theory_history(force=refresh, limit=limit)
 
 
 @app.get('/api/pro/gravity/automatic/year-backtest')

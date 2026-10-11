@@ -21,6 +21,7 @@ import math
 import os
 import re
 import statistics
+from calendar import month_abbr, month_name
 import threading
 import time
 import zipfile
@@ -179,6 +180,13 @@ def _parse_shiller_date(value: Any) -> date | None:
             return date(int(m.group(3)), int(m.group(1)), 1)
         except ValueError:
             return None
+    # Multpl commonly uses formats such as "Oct 2026", "October 1, 2026",
+    # or "Oct 1, 2026". The old parser silently rejected all of these.
+    for fmt in ("%b %Y", "%B %Y", "%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y"):
+        try:
+            return datetime.strptime(text, fmt).date().replace(day=1)
+        except ValueError:
+            pass
     return None
 
 
@@ -189,10 +197,13 @@ def _normal_header(value: Any) -> str:
 def _read_shiller_bytes(blob: bytes) -> list[dict[str, Any]]:
     if pd is None:
         raise RuntimeError("缺少 pandas，无法读取 Shiller Excel 数据")
-    workbook = pd.ExcelFile(io.BytesIO(blob), engine="xlrd")
+    # Shiller's URL may redirect or change file format. Detect the actual payload,
+    # instead of forcing xlrd for both .xls and .xlsx downloads.
+    engine = "openpyxl" if blob[:2] == b"PK" else "xlrd"
+    workbook = pd.ExcelFile(io.BytesIO(blob), engine=engine)
     output: dict[str, dict[str, Any]] = {}
     for sheet in workbook.sheet_names:
-        frame = pd.read_excel(io.BytesIO(blob), sheet_name=sheet, header=None, engine="xlrd")
+        frame = pd.read_excel(io.BytesIO(blob), sheet_name=sheet, header=None, engine=engine)
         frame = frame.replace({"": None})
         if frame.empty:
             continue
@@ -297,7 +308,7 @@ def _cape_history(force: bool = False) -> list[dict[str, Any]]:
                 continue
             clean = [re.sub(r"<[^>]+>", "", x).replace("&nbsp;", " ").strip() for x in cells]
             dt = _parse_shiller_date(clean[0])
-            val = _finite(clean[1].replace(",", ""))
+            val = _finite(re.sub(r"[$,\s]", "", clean[1]))
             if dt and val and val > 0:
                 rows.append({"date": dt.isoformat(), "cape": val, "real_earnings": None,
                              "real_earnings_growth_10y_pct": None, "source": "Multpl CAPE history fallback",
@@ -393,6 +404,63 @@ def _build_buffett_history(nf: list[dict[str, Any]], financial: list[dict[str, A
     return rows
 
 
+def _load_world_bank_buffett(force: bool = False) -> dict[str, Any]:
+    """Annual listed-domestic-market-cap/GDP series; a transparent Buffett-type measure.
+
+    World Bank indicator CM.MKT.LCAP.GD.ZS is already expressed as percent of GDP.
+    It is annual and not marked-to-market daily, which is preferable to presenting
+    a broad Z.1 corporate-equity-liability proxy as a precise current Buffett ratio.
+    """
+    key = "worldbank:listed_market_cap_gdp"
+    with _LOCK:
+        cached = _CACHE.get(key)
+        if cached and not force and time.time() - cached["ts"] < TTL_SECONDS:
+            return cached["value"]
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    disk = CACHE_DIR / "worldbank_buffett.json"
+    if disk.exists() and not force:
+        try:
+            payload = json.loads(disk.read_text(encoding="utf-8"))
+            if time.time() - float(payload.get("cached_at_epoch", 0)) < TTL_SECONDS and payload.get("history"):
+                result = payload
+                with _LOCK:
+                    _CACHE[key] = {"ts": float(payload["cached_at_epoch"]), "value": result}
+                return result
+        except Exception:
+            pass
+    url = "https://api.worldbank.org/v2/country/USA/indicator/CM.MKT.LCAP.GD.ZS?format=json&per_page=100"
+    response = _HTTP.get(url, timeout=(5, 18), headers={"Accept": "application/json"})
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, list) or len(payload) < 2 or not isinstance(payload[1], list):
+        raise ValueError("世界银行上市公司市值/GDP接口返回结构异常")
+    history = []
+    for row in payload[1]:
+        year = str(row.get("date", ""))
+        value = _finite(row.get("value"))
+        if not re.fullmatch(r"\d{4}", year) or value is None or value <= 0:
+            continue
+        # Do not invent the exact publication date. The value's observation date is
+        # year-end, and the UI labels it as annual World Bank data.
+        history.append({"date": f"{year}-12-31", "year": int(year), "value": value,
+                        "available_date_proxy": f"{int(year)+2}-01-01",
+                        "source": "World Bank CM.MKT.LCAP.GD.ZS",
+                        "source_url": "https://data.worldbank.org/indicator/CM.MKT.LCAP.GD.ZS?locations=US"})
+    history.sort(key=lambda r: r["date"])
+    if len(history) < 10:
+        raise ValueError("世界银行上市公司市值/GDP有效历史不足10年")
+    latest = history[-1]
+    result = {"current": {**latest, "method": "世界银行美国上市国内公司市值/GDP年度指标；不是每日估算"},
+              "history": history, "source": "World Bank CM.MKT.LCAP.GD.ZS",
+              "definition_warning": "年度上市国内公司市值/GDP指标；公布滞后，不是实时日频指标。",
+              "frequency": "annual", "errors": []}
+    saved = {**result, "cached_at": _now_utc(), "cached_at_epoch": time.time()}
+    disk.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+    with _LOCK:
+        _CACHE[key] = {"ts": time.time(), "value": result}
+    return result
+
+
 def _load_buffett(force: bool = False) -> dict[str, Any]:
     key = "buffett:series"
     with _LOCK:
@@ -400,6 +468,10 @@ def _load_buffett(force: bool = False) -> dict[str, Any]:
         if cached and not force and time.time() - cached["ts"] < TTL_SECONDS:
             return cached["value"]
     errors = []
+    try:
+        return _load_world_bank_buffett(force)
+    except Exception as exc:
+        errors.append(f"World Bank listed market cap/GDP: {str(exc)[:150]}")
     tasks = {
         "nf": lambda: _series_csv(FRED_SERIES["nonfinancial_equities"], force),
         "financial": lambda: _series_csv(FRED_SERIES["financial_equities"], force),
@@ -438,7 +510,12 @@ def _load_buffett(force: bool = False) -> dict[str, Any]:
                "gdp_billions_annualized": last["gdp_billions_annualized"],
                "source": "Federal Reserve Z.1/FRED equities; S&P 500 close-scaled daily estimate",
                "method": "最新联储企业股权市值按标普 500 从最近季度锚点滚动更新，再除以最新名义 GDP；不是任一单独指数的市值/GDP。"}
-    result = {"current": current, "history": history, "source": "FRED: NCBEILQ027S + FBCELLQ027S + GDP; Yahoo ^GSPC scale", "errors": errors}
+    if current_value > 350 or current_value <= 0:
+        # Broad Z.1 liabilities are not comparable to listed-market capitalization.
+        # Do not surface a wildly out-of-range value as the Buffett indicator.
+        current = None
+        errors.append(f"Z.1 fallback rejected as current Buffett value: {current_value:.2f}% outside validation bounds")
+    result = {"current": current, "history": history, "source": "FRED Z.1 corporate-equity liabilities/GDP proxy (fallback only)", "definition_warning": "Z.1 corporate-equity liabilities cover a broader universe than listed domestic market capitalization; fallback is not a canonical Buffett indicator.", "errors": errors, "frequency": "quarterly_proxy"}
     with _LOCK:
         _CACHE[key] = {"ts": time.time(), "value": result}
     return result
@@ -897,7 +974,7 @@ def _macro_model_values(macro_obs: dict[str, Any]) -> dict[str, Any]:
             "Q": obs["Q_REAL_GDP"]["value"], "Q_date": obs["Q_REAL_GDP"]["date"],
             "corporate_profit_after_tax": profit, "corporate_profit_date": obs["CORPORATE_PROFIT_AFTER_TAX"]["date"],
             "nominal_gdp": gdp, "nominal_gdp_date": obs["NOMINAL_GDP"]["date"],
-            "M1_unit": "Billions USD", "P_unit": "GDP deflator index", "Q_unit": "Billions of chained 2017 USD, SAAR",
+            "M1_unit": "USD billions (10^9 USD)", "V_unit": "dimensionless ratio", "P_unit": "GDP deflator index (2017=100)", "Q_unit": "Billions of chained 2017 USD, SAAR",
             "A_over_M_objective": None, "A_over_M_buyer": None,
             "source_status": "READY" if alpha is not None else "ALPHA_PROXY_INVALID",
             "source_notes": "M1、V、P、Q 来自 FRED；α 以企业税后利润/GDP作为操作性代理，界面将明确标注。"}
@@ -938,7 +1015,10 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
         cape_pctl = _percentile(cape_latest, [r["cape"] for r in cape_rows if r.get("cape") is not None])
         cape_hist = [{"date": r["date"], "value": r["cape"]} for r in cape_rows if r.get("cape") is not None]
     bcurrent = buffett.get("current") if buffett else None
-    bhistory = (buffett.get("history") or []) if buffett else []
+    # A broad Z.1 equity-liability proxy is not the listed-market-cap Buffett
+    # indicator. Keep it out of the canonical value/history chart when the
+    # World Bank series is unavailable; report source status instead.
+    bhistory = (buffett.get("history") or []) if buffett and buffett.get("frequency") != "quarterly_proxy" else []
     bvalue = bcurrent.get("value") if bcurrent else None
     bpctl = _percentile(bvalue, [r["value"] for r in bhistory if r.get("value") is not None])
     y10_real = real_yield.get("value")
@@ -1034,15 +1114,18 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
         macro_model["numerator_alpha_M1_V"] = numerator
         macro_model["A_over_M_objective"] = numerator / (r_obj / 100.0) if r_obj is not None and r_obj > 0 else None
         macro_model["A_over_M_buyer"] = numerator / (r_buyer / 100.0) if r_buyer is not None and r_buyer > 0 else None
-        macro_model["A_over_M_unit"] = "Billions USD (proxy capitalization)"
-        macro_model["A_over_M_formula"] = "(alpha_proxy * M1 * V) / (R/100); R must be positive"
+        macro_model["A_over_M_unit"] = "USD billions (10^9 USD; model-implied capitalization proxy, not a dimensionless ratio)"
+        macro_model["A_over_M_formula"] = "(alpha_proxy_fraction * M1_USD_billions * V) / (R_percent/100); R must be positive; output unit USD billions"
     index_meta = INDEXES.get(index, INDEXES["SP500"])
     return {
-        "ok": True, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.43-STRICT-AUTO-GRAVITY",
+        "ok": True, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.45-DATA-UNITS-FIX",
         "as_of": _now_utc(), "requested_index": index, "index_name": index_meta["name"], "index_symbol": index_meta["symbol"],
         "metrics": {
             "buffett_indicator_pct_gdp": round(bvalue, 3) if bvalue is not None else None,
             "buffett_percentile": bpctl, "buffett_observation_date": bcurrent.get("date") if bcurrent else None,
+            "buffett_definition": (bcurrent.get("method") or bcurrent.get("source") or buffett.get("definition_warning") if bcurrent else "无通过校验的当前巴菲特型指标"),
+            "buffett_frequency": buffett.get("frequency", "unknown"),
+            "buffett_quality_warning": ("数值超过 350%，超出可比口径校验范围，已阻断显示。" if bvalue is not None and bvalue > 350 else (buffett.get("definition_warning") if bcurrent and buffett.get("frequency") == "quarterly_proxy" else None)),
             "buffett_anchor_date": bcurrent.get("anchor_date") if bcurrent else None,
             "cape": round(cape_latest, 3) if cape_latest is not None else None,
             "cape_percentile": cape_pctl, "cape_observation_date": cape_row.get("date") if cape_row else None,
@@ -1098,8 +1181,8 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
             "buyer_source_status": buyer_status,
         },
         "sources": [
-            {"name": "Federal Reserve Z.1/FRED corporate equities", "url": "https://fred.stlouisfed.org/series/NCBEILQ027S", "available": bool(bhistory), "last_observation": bhistory[-1]["date"] if bhistory else None},
-            {"name": "US nominal GDP via FRED", "url": "https://fred.stlouisfed.org/series/GDP", "available": bool(bhistory), "last_observation": bhistory[-1]["date"] if bhistory else None},
+            {"name": "World Bank listed domestic market capitalization / GDP (annual)", "url": "https://data.worldbank.org/indicator/CM.MKT.LCAP.GD.ZS?locations=US", "available": bool(bhistory) and buffett.get("frequency") == "annual", "last_observation": bhistory[-1]["date"] if bhistory else None},
+            {"name": "FRED Z.1 corporate-equity liabilities/GDP (proxy; not canonical Buffett indicator)", "url": "https://fred.stlouisfed.org/series/NCBEILQ027S", "available": False, "last_observation": None, "status": "仅诊断，不参与巴菲特指标展示"},
             {"name": "Robert Shiller official CAPE data", "url": cape_row.get("source_url") if cape_row else SHILLER_URLS[0], "available": bool(cape_rows), "last_observation": cape_row.get("date") if cape_row else None},
             {"name": "FRED 10-year real Treasury yield DFII10", "url": "https://fred.stlouisfed.org/series/DFII10", "available": y10_real is not None, "last_observation": real_yield.get("date") if real_yield else None},
             {"name": "FRED 10-year nominal Treasury yield DGS10", "url": "https://fred.stlouisfed.org/series/DGS10", "available": y10_nominal is not None, "last_observation": nominal_yield.get("date") if nominal_yield else None},
@@ -1148,7 +1231,7 @@ def automatic_dashboard(index: str = "SP500", force: bool = False) -> dict[str, 
         return _metrics_bundle(idx, raw)
     except Exception as exc:
         buyer = _get_buyer_status(start_if_missing=True)
-        return {"ok": False, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.43-STRICT-AUTO-GRAVITY",
+        return {"ok": False, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.45-DATA-UNITS-FIX",
                 "requested_index": idx, "status": "SOURCE_ERROR", "message": "自动指标源暂不可用，正在保留可追溯的错误信息；不需要也不允许手动填数。",
                 "error": str(exc)[:300], "buyer_source": {k:v for k,v in buyer.items() if k != "records"},
                 "sources": [{"name":"Mendeley institutional expectations", "url": MENDELEY_DATASET_URL}]}
@@ -1393,6 +1476,73 @@ def _growth_at_date(cape_rows: list[dict[str, Any]], as_of: str) -> float | None
     eligible = [r for r in cape_rows if r.get("date", "") <= as_of and r.get("real_earnings_growth_10y_pct") is not None]
     return eligible[-1]["real_earnings_growth_10y_pct"] if eligible else None
 
+
+
+def charter_theory_history(force: bool = False, limit: int = 320) -> dict[str, Any]:
+    """Long-run macro analogues for the user's chartered-tax-company identities.
+
+    Uses FRED quarterly observations. The identities are tested as a mapping:
+    Q/V = M2/P and 1/P = Q/(M2*V), with P expressed as the GDP-deflator
+    multiplier (GDPDEF/100). V is derived as nominal GDP / M2. This is a
+    macroeconomic proxy series, not observed total listed-share count or a
+    stock-index price series; revised history is not point-in-time vintage data.
+    """
+    limit = max(40, min(600, int(limit)))
+    ids = {"M2": "M2SL", "GDP": "GDP", "P": "GDPDEF", "Q": "GDPC1"}
+    fetched: dict[str, list[dict[str, Any]]] = {}
+    errors: list[str] = []
+    for key, series_id in ids.items():
+        try:
+            fetched[key] = _series_csv(series_id, force=force)
+        except Exception as exc:
+            errors.append(f"{series_id}: {str(exc)[:120]}")
+            fetched[key] = []
+    if any(not fetched[k] for k in ids):
+        return {"ok": False, "status": "SOURCE_INCOMPLETE", "message": "长期趋势数据源不完整；不会用缺失值补齐。", "errors": errors, "series": {}}
+
+    def latest_at(rows: list[dict[str, Any]], d: str) -> dict[str, Any] | None:
+        eligible = [r for r in rows if r.get("date", "") <= d and _finite(r.get("value")) is not None]
+        return eligible[-1] if eligible else None
+
+    output = []
+    for qrow in fetched["Q"]:
+        d = qrow["date"]
+        m2row, gdprow, prow = latest_at(fetched["M2"], d), latest_at(fetched["GDP"], d), latest_at(fetched["P"], d)
+        q, m2, gdp, p_index = (_finite(qrow.get("value")), _finite(m2row.get("value")) if m2row else None,
+                               _finite(gdprow.get("value")) if gdprow else None, _finite(prow.get("value")) if prow else None)
+        if None in (q, m2, gdp, p_index) or min(q, m2, gdp, p_index) <= 0:
+            continue
+        p = p_index / 100.0
+        v = gdp / m2
+        # Both identities are independently calculated, not forced equal.
+        q_over_v = q / v
+        m2_over_p = m2 / p
+        inv_p = 1.0 / p
+        q_over_mv = q / (m2 * v)
+        output.append({"date": d, "Q": q, "M2": m2, "GDP_nominal": gdp,
+                       "P_deflator_index": p_index, "P_multiplier": p, "V": v,
+                       "Q_over_V_billions": q_over_v, "M2_over_P_billions": m2_over_p,
+                       "identity_gap_pct": ((q_over_v / m2_over_p) - 1.0) * 100.0,
+                       "one_over_P": inv_p, "Q_over_MV": q_over_mv,
+                       "price_identity_gap_pct": ((inv_p / q_over_mv) - 1.0) * 100.0,
+                       "source_dates": {"Q": d, "M2": m2row["date"], "GDP": gdprow["date"], "P": prow["date"]}})
+    if len(output) < 40:
+        return {"ok": False, "status": "INSUFFICIENT_HISTORY", "message": "共同口径历史不足40个季度。", "errors": errors, "series": {}}
+    # Keep quarterly history and a concise set of display metadata.
+    output = output[-limit:]
+    latest = output[-1]
+    return {"ok": True, "status": "READY", "as_of": latest["date"], "count": len(output),
+            "start_date": output[0]["date"], "end_date": latest["date"], "series": output,
+            "metrics": latest,
+            "summary": {"mean_identity_gap_pct": statistics.mean(r["identity_gap_pct"] for r in output),
+                        "max_abs_identity_gap_pct": max(abs(r["identity_gap_pct"]) for r in output),
+                        "mean_price_identity_gap_pct": statistics.mean(r["price_identity_gap_pct"] for r in output),
+                        "max_abs_price_identity_gap_pct": max(abs(r["price_identity_gap_pct"]) for r in output)},
+            "sources": [{"name": "FRED M2SL", "url": "https://fred.stlouisfed.org/series/M2SL", "available": bool(fetched["M2"]), "last_observation": fetched["M2"][-1]["date"]},
+                        {"name": "FRED GDP（名义GDP）", "url": "https://fred.stlouisfed.org/series/GDP", "available": bool(fetched["GDP"]), "last_observation": fetched["GDP"][-1]["date"]},
+                        {"name": "FRED GDPDEF（GDP平减指数）", "url": "https://fred.stlouisfed.org/series/GDPDEF", "available": bool(fetched["P"]), "last_observation": fetched["P"][-1]["date"]},
+                        {"name": "FRED GDPC1（实际GDP）", "url": "https://fred.stlouisfed.org/series/GDPC1", "available": bool(fetched["Q"]), "last_observation": fetched["Q"][-1]["date"]}],
+            "warning": "这是把宏观数据映射到你的费雪公式股票字典后的长期趋势代理，不是直接观测到的美股总股数/单股价格。FRED历史值可能被修订，不是严格实时点时序列。V=名义GDP/M2；P=GDPDEF/100。由于V由名义GDP/M2构造，且名义GDP与Q、P之间存在国民核算关系，两组等式偏差主要是代数/数据口径审计，不构成独立预测检验。"}
 
 def automatic_history(index: str = "SP500", limit: int = 240, force: bool = False) -> dict[str, Any]:
     dashboard = automatic_dashboard(index, force)
