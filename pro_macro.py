@@ -453,10 +453,26 @@ def _polymarket_macro_markets(kind: str, reference_month: str) -> dict[str, Any]
             for ev in (data or {}).get('events') or []:
                 title=str(ev.get('title') or '')
                 low=title.lower()
+                # Reject markets for a different release month even if a broad search query
+                # returns them. Full and abbreviated English month labels are both accepted.
+                period_parts=month.split()
+                month_name=period_parts[0] if period_parts else ''
+                year_text=period_parts[-1] if len(period_parts)>1 else ''
+                month_aliases={
+                    'January':('january','jan'), 'February':('february','feb'), 'March':('march','mar'),
+                    'April':('april','apr'), 'May':('may',), 'June':('june','jun'), 'July':('july','jul'),
+                    'August':('august','aug'), 'September':('september','sep'), 'October':('october','oct'),
+                    'November':('november','nov'), 'December':('december','dec')}
+                aliases=month_aliases.get(month_name, (month_name.lower(),))
+                period_text=(title+' '+str(ev.get('description') or '')).lower()
+                period_match=any(re.search(r'\b'+re.escape(a)+r'\b',period_text) for a in aliases) and (not year_text or not re.search(r'\b20\d{2}\b',period_text) or year_text in period_text)
                 relevant = (kind == 'CPI' and ('cpi' in low or 'inflation' in low)) or (kind == 'PPI' and ('ppi' in low or 'producer price' in low)) or (kind == 'PCE' and ('pce' in low or 'personal consumption expenditures' in low)) or (kind == '非农就业' and ('payroll' in low or 'jobs report' in low or 'employment situation' in low))
-                if not relevant or ev.get('active') is False or ev.get('closed') is True: continue
+                if not relevant or not period_match or ev.get('active') is False or ev.get('closed') is True: continue
                 for market in (ev.get('markets') or []):
                     question=str(market.get('question') or ev.get('title') or '')
+                    question_low=question.lower()
+                    if not (any(re.search(r'\b'+re.escape(a)+r'\b',question_low) for a in aliases) and (not year_text or not re.search(r'\b20\d{2}\b',question_low) or year_text in question_low)):
+                        continue
                     outcomes=_parse_json_list(market.get('outcomes')); prices=_parse_json_list(market.get('outcomePrices'))
                     if not outcomes or not prices: continue
                     probs=[]
