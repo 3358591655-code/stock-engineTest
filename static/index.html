@@ -228,62 +228,6 @@ body.pro-mode .ael-pro-shell .ael-pro-table th{background:#182331!important;colo
 body.pro-mode .ael-pro-tab{flex:0 0 auto!important;min-height:42px!important;padding:9px 14px!important}
 @media(max-width:760px){body.pro-mode .ael-pro-tab{min-height:40px!important;padding:8px 13px!important;font-size:12px!important}}
 </style>
-<script src="https://res.wx.qq.com/open/js/jweixin-1.6.0.js"></script>
-<script>
-(function(){
-  function initAELWeChatSDK(){
-    if(!window.wx) return;
-    var pageUrl = window.location.href.split('#')[0];
-    var apiUrl = '/api/wechat/config?url=' + encodeURIComponent(pageUrl);
-    fetch(apiUrl, {credentials:'same-origin', cache:'no-store'})
-      .then(function(r){
-        return r.json().then(function(data){ return {ok:r.ok, data:data}; });
-      })
-      .then(function(result){
-        if(!result.ok || !result.data || !result.data.ok) {
-          throw new Error((result.data && result.data.detail) || '微信 JS-SDK 配置获取失败');
-        }
-        var c = result.data;
-        wx.config({
-          debug: false,
-          appId: c.appId,
-          timestamp: c.timestamp,
-          nonceStr: c.nonceStr,
-          signature: c.signature,
-          jsApiList: ['updateAppMessageShareData','updateTimelineShareData']
-        });
-        wx.ready(function(){
-          window.AEL_WECHAT_READY = true;
-          try {
-            wx.updateAppMessageShareData({
-              title: document.title || 'AEL｜股票基本面驾驶舱',
-              desc: '美股 · 港股 · A股｜基本面 · 估值 · 技术 · 市场扫描',
-              link: window.location.href.split('#')[0],
-              imgUrl: location.origin + '/static/ael-share.png'
-            });
-            wx.updateTimelineShareData({
-              title: document.title || 'AEL｜股票基本面驾驶舱',
-              link: window.location.href.split('#')[0],
-              imgUrl: location.origin + '/static/ael-share.png'
-            });
-          } catch(e) {}
-        });
-        wx.error(function(err){
-          window.AEL_WECHAT_READY = false;
-          console.warn('AEL WeChat JS-SDK config error:', err);
-        });
-      })
-      .catch(function(err){
-        window.AEL_WECHAT_READY = false;
-        console.warn('AEL WeChat JS-SDK init failed:', err);
-      });
-  }
-  if(/MicroMessenger/i.test(navigator.userAgent)){
-    if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAELWeChatSDK);
-    else initAELWeChatSDK();
-  }
-})();
-</script>
 </head><body><div class="ael-modebar"><div class="ael-brand">AEL</div><div class="ael-mode-switch"><button id="modeLite" class="active" onclick="setAELMode('lite')">Lite</button><button id="modePro" onclick="setAELMode('pro')">Pro</button></div></div><div id="ael-lite-root"><div class="wrap">
 <section class="ael-lite-hero">
   <div class="ael-hero-top">
@@ -315,6 +259,7 @@ body.pro-mode .ael-pro-tab{flex:0 0 auto!important;min-height:42px!important;pad
     <button class="ael-pro-tab" data-pro-tab="treasury" onclick="switchProTab('treasury')">国债</button>
     <button class="ael-pro-tab" data-pro-tab="expectation" onclick="switchProTab('expectation')">预期详情</button>
     <button class="ael-pro-tab" data-pro-tab="backtest" onclick="switchProTab('backtest')">回测</button>
+    <button class="ael-pro-tab" data-pro-tab="gravity" onclick="switchProTab('gravity')">双重重力</button>
   </div>
   <div class="ael-pro-shell">
     <div class="ael-pro-head">
@@ -618,6 +563,11 @@ body.pro-mode .ael-pro-tab{flex:0 0 auto!important;min-height:42px!important;pad
       </div>
 
       <div class="ael-pro-card" style="margin-top:12px">
+        <div class="ael-macro-section-head"><div><div class="ael-pro-section">日程提醒｜宏观数据与巨头财报</div><div class="ael-macro-hint">FOMC、CPI、非农就业与主要指数巨头财报；官方日期与预测日期分开标识。</div></div><button class="ael-pro-btn" onclick="loadAelEventCalendar()">刷新日程</button></div>
+        <div id="aelEventCalendar" class="ael-pro-empty">加载日程中…</div>
+      </div>
+
+      <div class="ael-pro-card" style="margin-top:12px">
         <details class="ael-macro-details"><summary>查看详细数据与数据源</summary><div id="macroQuality" class="ael-macro-quality">尚未请求。</div><div id="macroMethod" class="ael-macro-method">真实数据优先；缺失不估算。</div></details>
       </div>
     </section>
@@ -727,6 +677,58 @@ body.pro-mode .ael-pro-tab{flex:0 0 auto!important;min-height:42px!important;pad
         </div>
         <div class="ael-pro-card" style="margin-top:12px"><div class="ael-pro-section">⑥ 严格验证</div><div id="btWalkForward"></div></div>
         <div class="ael-pro-card" style="margin-top:12px"><details class="ael-macro-details"><summary>查看数据与方法说明</summary><div id="btDataQuality" class="ael-bt-note" style="margin-top:8px"></div><div id="btMethod" class="ael-bt-note" style="margin-top:8px"></div></details></div>
+      </div>
+    </section>
+    <section id="pro-tab-gravity" class="ael-pro-tabpanel" style="display:none">
+      <div class="ael-pro-card">
+        <div class="ael-pro-section">AEL PRO · 双重重力研究</div>
+        <div class="ael-pro-note">这是独立研究模块，不接管 Lite，也不修改 Whisper、ATS 或现有回测。先输入同一观察日、同一估计期限下的参数，运行情景计算；未验证的历史数据不会被标成正式 Theta。</div>
+        <div id="gravityDataStatus" class="ael-pro-note" style="margin-top:10px">数据状态尚未读取。</div>
+        <div class="ael-pro-inputs" style="margin-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
+          <label>无风险利率 Rf（%）<input id="gravityRf" type="number" step="any" placeholder="例如 4.5"></label>
+          <label>客观风险溢价 ERP*（%）<input id="gravityEo" type="number" step="any" placeholder="客观端数据"></label>
+          <label>客观增长预期 g*（%）<input id="gravityGo" type="number" step="any" placeholder="客观端数据"></label>
+          <label>买方风险溢价 ERPᴮ（%）<input id="gravityEb" type="number" step="any" placeholder="买方端数据"></label>
+          <label>买方增长预期 gᴮ（%）<input id="gravityGb" type="number" step="any" placeholder="买方端数据"></label>
+          <label>观察日期<input id="gravityDate" type="date"></label>
+          <label>估计期限（年）<input id="gravityHorizon" type="number" min="0.1" max="100" step="0.1" placeholder="例如 5"></label>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          <button class="ael-pro-btn" onclick="runGravityScenario()">计算情景</button>
+          <button class="ael-pro-btn" onclick="loadGravityStatus()">刷新数据状态</button>
+          <button class="ael-pro-btn" onclick="clearGravityInputs()">清空输入</button>
+        </div>
+      </div>
+      <div class="ael-pro-card" style="margin-top:12px">
+        <div class="ael-pro-section">计算结果</div>
+        <div id="gravityResult" class="ael-pro-metrics"><div class="ael-pro-empty">填写五项参数后点击“计算情景”。空值不会被系统估算。</div></div>
+        <div id="gravityInterpretation" class="ael-pro-note" style="margin-top:10px">尚未计算。</div>
+      </div>
+      <div class="ael-pro-card" style="margin-top:12px">
+        <div class="ael-pro-section">指定年份后的实际市场表现</div>
+        <div class="ael-pro-note">输入具体年份，例如 2007，查看该年最后一个交易日之后，三大指数在 1、3、5、10 年的实际表现。此功能先展示真实指数行情；巴菲特指标、CAPE、R实际、R客观与重力比值的对应年份信号值，只有在接入可验证历史序列后才会参与正式指标回测。</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin-top:12px">
+          <label>年份<input id="gravityYearInput" type="number" min="1900" max="2100" step="1" value="2007" style="max-width:140px"></label>
+          <label>回测指标<select id="gravityYearMetric"><option value="gravity_ratio">重力比值 Θ</option><option value="R_actual">R实际</option><option value="R_objective">R客观</option><option value="buffett">巴菲特指标</option><option value="cape">席勒市盈率（CAPE）</option></select></label>
+          <label>指数<select id="gravityYearIndex"><option value="SP500">标普 500</option><option value="NASDAQ">纳斯达克综合指数</option><option value="DOW">道琼斯工业平均指数</option></select></label>
+          <button class="ael-pro-btn" onclick="runGravityYearBacktest()">回测该年之后表现</button>
+        </div>
+        <div id="gravityYearBacktestStatus" class="ael-pro-note" style="margin-top:10px">尚未选择年份运行。</div>
+        <div id="gravityYearBacktestTable" style="overflow:auto;margin-top:10px"></div>
+      </div>
+      <div class="ael-pro-card" style="margin-top:12px">
+        <div class="ael-pro-section">历史数据与探索性回测（只读）</div>
+        <div class="ael-pro-note">这里读取随版本打包的历史代理数据与既有探索性对照。它们可以帮助检查信号，但不等于正式 Theta 回测；正式 Theta 未识别时始终显示“暂无数据”。</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
+          <button class="ael-pro-btn" onclick="loadGravityHistory()">读取 1997–2024 代理面板</button>
+          <label>收益期限 <select id="gravityBacktestHorizon"><option value="1">1 年</option><option value="3">3 年</option><option value="5">5 年</option></select></label>
+          <label>同日机构数门槛口径 <select id="gravityBacktestN"><option value="1">1 家</option><option value="3">3 家</option><option value="5">5 家</option></select></label>
+          <button class="ael-pro-btn" onclick="loadGravityBacktest()">查看探索性对照</button>
+        </div>
+        <div id="gravityHistoryStatus" class="ael-pro-note" style="margin-top:10px">历史面板尚未读取。</div>
+        <div id="gravityHistoryTable" style="overflow:auto;margin-top:10px"></div>
+        <div id="gravityBacktestStatus" class="ael-pro-note" style="margin-top:14px">探索性对照尚未读取。</div>
+        <div id="gravityBacktestTable" style="overflow:auto;margin-top:10px"></div>
       </div>
     </section>
   </div>
@@ -1123,8 +1125,15 @@ function renderCockpitCandidates(q){
 function switchProTab(tab){
   document.querySelectorAll(".ael-pro-tabpanel").forEach(x=>x.style.display="none");
   document.querySelectorAll(".ael-pro-tab").forEach(x=>x.classList.toggle("active",x.dataset.proTab===tab));
-  const el=document.getElementById("pro-tab-"+tab);if(el)el.style.display="block";
+  const el=document.getElementById("pro-tab-"+tab);if(el)el.style.display="block";if(tab==="gravity"){loadGravityStatus();}
 }
+
+async function loadGravityHistory(){const st=document.getElementById('gravityHistoryStatus'),box=document.getElementById('gravityHistoryTable');if(st)st.textContent='正在读取已打包的历史代理数据……';if(box)box.innerHTML='';try{const r=await fetch('/api/pro/gravity/history?start_year=1997&end_year=2024');const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.detail||d.error||'读取失败');if(st)st.innerHTML=`共 ${Number(d.row_count||0)} 个年度代理记录；正式 Theta ${Number(d.formal_theta_rows||0)} 条。<br>${esc(d.warning||'')}`;const rows=d.rows||[];if(!rows.length){if(box)box.innerHTML='<div class="ael-pro-empty">暂无可显示数据。</div>';return;}const cols=[['year','年份'],['institution_count','机构数'],['institution_expected_total_return_median_pct','机构预期总回报中位数（%）'],['analyst_growth_proxy_pct','分析师增长代理（%）'],['institution_minus_analyst_growth_proxy_median_pct','机构回报－分析师增长代理（百分点）'],['institution_decomposition_RB_proxy_median_pct','买方重力代理（%）'],['formal_theta','正式 Theta'],['formal_theta_status','正式状态']];if(box)box.innerHTML='<table class="ael-pro-table"><thead><tr>'+cols.map(c=>`<th>${esc(c[1])}</th>`).join('')+'</tr></thead><tbody>'+rows.map(row=>'<tr>'+cols.map(c=>{const v=row[c[0]];return `<td>${v==null||v===''?'暂无数据':esc(typeof v==='number'?Number(v).toFixed(3):v)}</td>`}).join('')+'</tr>').join('')+'</tbody></table>';}catch(e){if(st)st.textContent='读取失败：'+(e.message||'未知错误');}}
+async function runGravityYearBacktest(){const st=document.getElementById('gravityYearBacktestStatus'),box=document.getElementById('gravityYearBacktestTable');const year=Number(document.getElementById('gravityYearInput')?.value),index=document.getElementById('gravityYearIndex')?.value||'SP500',metric=document.getElementById('gravityYearMetric')?.value||'gravity_ratio';if(!Number.isInteger(year)||year<1900||year>new Date().getFullYear()){if(st)st.textContent='请输入有效年份（1900 至当前年份）。';if(box)box.innerHTML='';return;}if(st)st.textContent='正在读取所选年份后的真实指数表现……';if(box)box.innerHTML='';try{const r=await fetch(`/api/pro/gravity/year-backtest?year=${encodeURIComponent(year)}&index=${encodeURIComponent(index)}&metric=${encodeURIComponent(metric)}`);const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.detail||d.error||'读取失败');const fmt=v=>v==null?'暂无数据':`${Number(v)>0?'+':''}${Number(v).toFixed(2)}%`;if(st)st.innerHTML=`<b>${esc(d.selected_metric_label||metric)} · ${esc(d.index_name||index)} · ${esc(year)} 年基准</b><br>该指标当年数值：${d.selected_metric_value==null?'暂无数据':esc(d.selected_metric_value)}<br>基准交易日：${esc(d.anchor_date||'暂无数据')}；基准值：${d.anchor_value==null?'暂无数据':Number(d.anchor_value).toFixed(2)}<br>行情口径：${esc(d.price_series_used||'暂无数据')}<br><b>${esc(d.indicator_data_status||'')}</b><br><span style="opacity:.85">${esc(d.warning||'')}</span>`;const rows=d.horizons||[];const cols=[['years','观察期限（年）'],['target_date','目标日期'],['actual_date','实际取值日期'],['return_pct','此后指数表现'],['status','数据状态']];if(box)box.innerHTML=rows.length?'<table class="ael-pro-table"><thead><tr>'+cols.map(c=>`<th>${esc(c[1])}</th>`).join('')+'</tr></thead><tbody>'+rows.map(row=>'<tr>'+cols.map(c=>{let v=row[c[0]];if(c[0]==='return_pct')v=fmt(v);if(c[0]==='status')v=v==='OBSERVED'?'已观测': '暂无数据';return `<td>${v==null||v===''?'暂无数据':esc(v)}</td>`}).join('')+'</tr>').join('')+'</tbody></table>':'<div class="ael-pro-empty">暂无可用数据。</div>';}catch(e){if(st)st.textContent='年份回测读取失败：'+(e.message||'未知错误');if(box)box.innerHTML='<div class="ael-pro-empty">未用其他年份或估算值替代。</div>';}}
+async function loadGravityBacktest(){const st=document.getElementById('gravityBacktestStatus'),box=document.getElementById('gravityBacktestTable');if(st)st.textContent='正在读取探索性收益对照……';if(box)box.innerHTML='';const h=document.getElementById('gravityBacktestHorizon')?.value||'1',n=document.getElementById('gravityBacktestN')?.value||'1';try{const r=await fetch(`/api/pro/gravity/backtest?horizon_years=${encodeURIComponent(h)}&min_institutions=${encodeURIComponent(n)}`);const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.detail||d.error||'读取失败');if(st)st.innerHTML=`探索性代理对照 · ${esc(h)} 年 · 机构数门槛口径 ${esc(n)} 家 · ${Number(d.result_count||0)} 条匹配记录。<br><b>${esc(d.warning||'')}</b>`;const rows=d.results||[];if(!rows.length){if(box)box.innerHTML='<div class="ael-pro-empty">该期限/机构数条件暂无可用对照记录；没有用其他条件代填。</div>';return;}const cols=[['signal_definition','信号定义'],['n_dates_total','总日期数'],['n_signal_dates','信号日期数'],['n_control_dates','对照日期数'],['signal_mean_cagr_pct','信号组平均年化收益（%）'],['control_mean_cagr_pct','对照组平均年化收益（%）'],['mean_difference_pp','均值差（百分点）'],['signal_max_drawdown_mean_pct','信号组平均最大回撤（%）'],['descriptive_exact_permutation_p_if_n_le22','描述性置换 p 值']];if(box)box.innerHTML='<table class="ael-pro-table"><thead><tr>'+cols.map(c=>`<th>${esc(c[1])}</th>`).join('')+'</tr></thead><tbody>'+rows.map(row=>'<tr>'+cols.map(c=>{const v=row[c[0]];return `<td>${v==null||v===''?'暂无数据':esc(typeof v==='number'?Number(v).toFixed(3):v)}</td>`}).join('')+'</tr>').join('')+'</tbody></table>';}catch(e){if(st)st.textContent='读取失败：'+(e.message||'未知错误');}}
+function clearGravityInputs(){['gravityRf','gravityEo','gravityGo','gravityEb','gravityGb','gravityDate','gravityHorizon'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});const r=document.getElementById('gravityResult');if(r)r.innerHTML='<div class="ael-pro-empty">输入已清空；未自动填入示例数据。</div>';const i=document.getElementById('gravityInterpretation');if(i)i.textContent='尚未计算。';}
+async function loadGravityStatus(){const el=document.getElementById('gravityDataStatus');if(el)el.textContent='正在读取数据质量状态……';try{const r=await fetch('/api/pro/gravity/status');const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.detail||d.error||'状态读取失败');if(el)el.innerHTML=`<b>正式 Theta 历史：</b>${Number(d.formal_theta_history_rows||0)} 条 · <b>正式回测：</b>${d.formal_backtest_ready?'可运行':'尚不可运行'}<br>${esc(d.message||'')}<br><span style="opacity:.8">${esc(d.proxy_panel_note||'')}</span>`;}catch(e){if(el)el.textContent='数据状态读取失败：'+(e.message||'未知错误');}}
+async function runGravityScenario(){const ids={rf_pct:'gravityRf',erp_objective_pct:'gravityEo',g_objective_pct:'gravityGo',erp_buyer_pct:'gravityEb',g_buyer_pct:'gravityGb'};const p=new URLSearchParams();Object.entries(ids).forEach(([k,id])=>{const v=document.getElementById(id)?.value;if(v!==undefined&&String(v).trim()!=='')p.set(k,v);});const date=document.getElementById('gravityDate')?.value;if(date)p.set('as_of_date',date);const horizon=document.getElementById('gravityHorizon')?.value;if(horizon)p.set('horizon_years',horizon);const result=document.getElementById('gravityResult'),note=document.getElementById('gravityInterpretation');if(result)result.innerHTML='<div class="ael-pro-empty">正在计算……</div>';try{const r=await fetch('/api/pro/gravity/calculate?'+p.toString());const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.detail||d.error||'计算失败');if(d.input_status!=='SCENARIO_CALCULATED'){if(result)result.innerHTML=`<div class="ael-pro-empty">参数不足：${(d.missing_inputs||[]).map(esc).join('、')}。请补齐全部五项，系统不会估算缺失值。</div>`;if(note)note.textContent=d.message||'参数不足';return;}const fmt=(v,suffix='%')=>v==null?'暂无数据':(Number(v)>0?'+':'')+Number(v).toFixed(3)+suffix;const rows=[['客观重力 R*',fmt(d.R_objective_scenario_pct)],['买方重力 Rᴮ',fmt(d.R_buyer_scenario_pct)],['重力差 ΔR',fmt(d.delta_R_scenario_pp,' 个百分点')],['情景 Theta',d.theta_scenario==null?'已抑制（分母接近零）':Number(d.theta_scenario).toFixed(4)],['买方重力状态',d.buyer_gravity_state||'暂无数据'],['正式 Theta', '暂无数据（未通过正式验证）']];if(result)result.innerHTML=rows.map(x=>`<div class="ael-pro-metric"><span>${esc(x[0])}</span><b>${esc(x[1])}</b></div>`).join('');if(note)note.innerHTML=`<b>${esc(d.interpretation||'')}</b><br>${esc(d.theta_warning||'')}<br><span style="opacity:.8">${esc(d.data_warning||'')}</span>`;}catch(e){if(result)result.innerHTML='<div class="ael-pro-empty">计算失败：'+esc(e.message||'未知错误')+'</div>';if(note)note.textContent='失败不会影响 AEL 原有算法。';}}
 function proResearchStock(){
   const raw=(document.getElementById("proSymbol")?.value||"").trim(),meta=resolveSearchItem(raw),s=(meta?.symbol||raw).trim().toUpperCase();
   const panel=document.getElementById("proResearchPanel"),st=document.getElementById("proResearchStatus");
@@ -1477,6 +1486,16 @@ function macroProbabilityRows(markets){
     return `<div class="ael-poly-market"><div class="ael-poly-question">${esc(m.question_zh||'美联储下一次利率决定')}</div><div class="ael-poly-zh-note">市场隐含概率，不代表美联储官方预测</div>${bars}<div class="ael-poly-meta">${esc(meta||'实时市场数据')} ${m.url?`· <a href="${esc(m.url)}" target="_blank" rel="noopener">查看市场</a>`:''}</div></div>`;
   }).join('');
 }
+async function loadAelEventCalendar(){
+ const box=document.getElementById('aelEventCalendar'); if(!box)return;
+ box.innerHTML='<div class="ael-pro-empty">正在读取官方日程与财报日历…</div>';
+ try{
+  const r=await fetch('/api/pro/events/calendar'); if(!r.ok)throw new Error('HTTP '+r.status);
+  const d=await r.json(), events=d.events||[];
+  const typeLabel={'FOMC':'美联储','CPI':'CPI','非农就业':'非农','财报':'巨头财报'};
+  box.innerHTML=events.length?`<div class="ael-fomc-list">${events.map(e=>{const pm=e.polymarket;const markets=pm?.markets||[];const odds=markets.slice(0,2).map(m=>`<div class="ael-poly-market" style="margin-top:8px"><div class="ael-poly-question">Polymarket：${esc(m.question||m.event_title||'宏观结果市场')}</div><div class="ael-poly-zh-note">市场隐含概率；不自动等于“高于分析师共识”的概率</div>${(m.outcomes||[]).map(o=>`<div class="ael-poly-row"><div class="ael-poly-label"><span>${esc(o.outcome)}</span><b>${macroNum(o.probability_pct,1)}%</b></div><div class="ael-poly-track"><i style="width:${Math.max(0,Math.min(100,Number(o.probability_pct)||0))}%"></i></div></div>`).join('')}${m.url?`<div class="ael-poly-meta"><a href="${esc(m.url)}" target="_blank" rel="noopener">查看 Polymarket 市场</a></div>`:''}</div>`).join('');return `<div class="ael-fomc-row" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px;align-items:center"><span><b>${esc(e.title)}</b><small style="display:block;color:#8393a3;margin-top:3px">${esc(e.time_et||'')}</small></span><span style="text-align:right"><b>${esc(macroDate(e.date))}</b><em style="display:block">${esc(typeLabel[e.type]||e.type)}${e.certainty==='estimated'?'·预测':'·官方'}</em></span></div>${odds||(['CPI','PPI','非农就业'].includes(e.type)?'<div class="ael-macro-hint" style="margin-top:6px">当前未检索到匹配的活跃 Polymarket 市场；不生成估算概率。</div>':'')}</div>`}).join('')}</div><div class="ael-macro-hint" style="margin-top:8px">来源：${(d.sources||[]).map(s=>`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.name)}</a>`).join(' · ')}。宏观数据时间为美国东部时间；财报日期可能调整并单独标记为预测日期。</div>`:'当前没有返回未来日程；请刷新或检查数据源。';
+ }catch(e){box.innerHTML=`<div class="ael-pro-empty">日程读取失败：${esc(String(e.message||e))}。<button class="ael-pro-btn" onclick="loadAelEventCalendar()">重试</button></div>`;}
+}
 function renderMacro(d){
  const p=d.policy?.latest||{}, next=d.fomc_calendar?.next_meeting||{}, cal=d.fomc_calendar?.meetings||[], s=d.series||{}, rg=d.regime||{};
  document.getElementById('macroFedRate').textContent=p.level||'暂无数据';
@@ -1489,6 +1508,7 @@ function renderMacro(d){
  document.getElementById('macroRegime').innerHTML=[rg.inflation,rg.labor,s.curve_10y2y?.latest?.value!=null?(s.curve_10y2y.latest.value<0?'曲线倒挂':'曲线正斜率'):'暂无数据',rg.credit].map(x=>`<div class="ael-macro-tag">${esc(x||'暂无数据')}</div>`).join('');
  const poly=d.polymarket||{};document.getElementById('macroPolyState').textContent=poly.markets?.length?'已更新':'暂无数据';document.getElementById('macroPoly').innerHTML=poly.markets?.length?macroProbabilityRows(poly.markets):`<div class="ael-pro-empty">暂无市场概率；不使用估算值。${poly.errors?.length?' 数据源：'+esc(poly.errors[0]):''}</div>`;
  document.getElementById('macroFomc').innerHTML=cal.length?`<div class="ael-fomc-list">${cal.map((x,i)=>`<div class="ael-fomc-row ${x.start===next.start?'next':''}"><span>${esc(x.label||'FOMC')}</span><b>${esc(macroDate(x.start))} – ${esc(macroDate(x.end))}</b>${x.start===next.start?'<em>下一次</em>':''}</div>`).join('')}</div>`:'暂无会议数据';
+ loadAelEventCalendar();
  const qd=d.data_quality||{}, missing=qd.missing_series||[], ss=qd.source_status||{};const sourceHtml=Object.entries(ss).map(([k,v])=>`<span class="ael-source-pill ${String(v).includes('异常')||String(v).includes('部分')?'bad':'good'}">${esc(k)} · ${esc(v)}</span>`).join('');
  document.getElementById('macroQuality').innerHTML=`<div class="ael-macro-quality-title">数据状态：${qd.series_available||0}/${qd.series_total||0} 个核心序列可用</div><div class="ael-source-list">${sourceHtml||'<span class="ael-source-pill">暂无数据</span>'}</div>${missing.length?`<div class="ael-macro-missing">缺失：${esc(missing.join('、'))}</div>`:''}${qd.errors?.length?`<details class="ael-tech-error"><summary>查看技术诊断（${qd.errors.length}）</summary><pre>${esc(qd.errors.join('\n'))}</pre></details>`:''}`;
  document.getElementById('macroMethod').textContent=d.method_note||'真实数据；缺失不估算。';
