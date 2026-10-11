@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import os
@@ -18,7 +18,6 @@ from pro_options import router as pro_options_router
 from pro_factor import analyze_factor
 from pro_risk import analyze_risk, analyze_portfolio
 from pro_macro import analyze_macro, macro_events_calendar
-from pro_important_schedule import get_cached_event_feed, filter_important_events, build_ics
 from pro_backtest import run_backtest
 from pro_expectation import analyze_expectation
 from pro_whisper import analyze_whisper, invalidate_whisper_cache
@@ -29,16 +28,13 @@ from pro_guidance_backtest import run_guidance_backtest
 from pro_polymarket import analyze_polymarket
 from ael_treasury import analyze_treasury
 from asset_data import get_asset, get_asset_index, get_asset_news
-from pro_gravity import calculate_scenario as calculate_gravity_scenario
-from pro_gravity_data import proxy_data_status, proxy_history, exploratory_backtest, source_audit
+from pro_gravity_data import proxy_data_status, proxy_history, exploratory_backtest
 from pro_gravity_year_backtest import year_forward_performance
-from pro_gravity_formal import formal_status as gravity_formal_status, build_formal_history, formal_backtest as gravity_formal_backtest
-from pro_gravity_source_sync import SourceSyncManager
+from pro_gravity_live import automatic_dashboard, automatic_history, automatic_year_backtest
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = '2.6.51-OBJECTIVE-PIPELINE-SOURCE-SYNC'
+APP_VERSION = '2.6.43-STRICT-AUTO-GRAVITY'
 app = FastAPI(title='AEL 股票基本面驾驶舱', version=APP_VERSION)
-gravity_source_sync = SourceSyncManager(BASE)
 # Pro is an extension layer. It has independent routes and never changes Lite scan/core logic.
 app.include_router(pro_options_router)
 
@@ -159,69 +155,38 @@ def asset_news(symbol: str):
         return {'ok': False, 'symbol': symbol.upper(), 'news': [], 'error': str(exc)[:180]}
 
 
+@app.get('/api/pro/gravity/automatic')
+def pro_gravity_automatic(
+    index: str = Query('SP500', pattern='^(SP500|NASDAQ|DOW)$'),
+    refresh: bool = Query(False),
+):
+    """Automatic no-manual-input double-gravity dashboard with live valuation data."""
+    return automatic_dashboard(index=index, force=refresh)
+
+
+@app.get('/api/pro/gravity/automatic/history')
+def pro_gravity_automatic_history(
+    index: str = Query('SP500', pattern='^(SP500|NASDAQ|DOW)$'),
+    limit: int = Query(240, ge=12, le=600),
+    refresh: bool = Query(False),
+):
+    return automatic_history(index=index, limit=limit, force=refresh)
+
+
+@app.get('/api/pro/gravity/automatic/year-backtest')
+def pro_gravity_automatic_year_backtest(
+    year: int = Query(..., ge=1900, le=2100),
+    index: str = Query('SP500', pattern='^(SP500|NASDAQ|DOW)$'),
+    metric: str = Query('cape', pattern='^(buffett|cape|R_actual|R_objective|theta)$'),
+    refresh: bool = Query(False),
+):
+    return automatic_year_backtest(year=year, index=index, metric=metric, force=refresh)
+
+
 @app.get('/api/pro/gravity/status')
 def pro_gravity_status():
     # Research status only. Formal history remains empty until source/date/horizon matching is validated.
     return proxy_data_status()
-
-
-@app.get('/api/pro/gravity/source-audit')
-def pro_gravity_source_audit():
-    # Explicit source coverage; never upgrades proxy records to formal Theta.
-    return source_audit()
-
-
-@app.get('/api/pro/gravity/formal-status')
-def pro_gravity_formal_status():
-    # Strict source-level readiness audit for the point-in-time research engine.
-    return gravity_formal_status()
-
-
-@app.get('/api/pro/gravity/source-sync/status')
-def pro_gravity_source_sync_status():
-    return gravity_source_sync.status()
-
-
-@app.post('/api/pro/gravity/source-sync/start')
-def pro_gravity_source_sync_start():
-    # Download is explicitly user-triggered and runs in a daemon thread; app startup/Lite stay non-blocking.
-    return gravity_source_sync.start()
-
-
-@app.get('/api/pro/gravity/source-sync/manifest')
-def pro_gravity_source_sync_manifest():
-    manifest = gravity_source_sync.manifest()
-    if manifest is None:
-        raise HTTPException(status_code=404, detail='原始机构研究包尚未成功下载或结构清单尚未生成。')
-    return manifest
-
-
-@app.get('/api/pro/gravity/formal-history')
-def pro_gravity_formal_history(
-    start_year: int = Query(1997, ge=1900, le=2100),
-    end_year: int = Query(2026, ge=1900, le=2100),
-):
-    if start_year > end_year:
-        raise HTTPException(status_code=400, detail='start_year 不能大于 end_year')
-    data = build_formal_history()
-    rows = [r for r in data.get('history', []) if start_year <= int(str(r.get('signal_date', '0000'))[:4]) <= end_year]
-    data['history'] = rows
-    data['returned_history_rows'] = len(rows)
-    data['filter'] = {'start_year': start_year, 'end_year': end_year}
-    return data
-
-
-@app.get('/api/pro/gravity/formal-backtest')
-def pro_gravity_formal_backtest(
-    horizon_years: int = Query(1, ge=1, le=5),
-    index: str = Query('SP500', pattern='^(SP500|NASDAQ|DOW)$'),
-    lag_days: int = Query(30, ge=0, le=180),
-    max_drawdown_pct: float = Query(-20.0, ge=-90.0, le=-5.0),
-):
-    if horizon_years not in (1, 3, 5):
-        raise HTTPException(status_code=400, detail='horizon_years 仅支持 1、3、5')
-    return gravity_formal_backtest(index=index, horizon_years=horizon_years,
-                                   lag_days=lag_days, max_drawdown_pct=max_drawdown_pct)
 
 
 @app.get('/api/pro/gravity/history')
@@ -257,23 +222,6 @@ def pro_gravity_year_backtest(
     if not result.get('ok') and result.get('error', '').startswith('年份须在'):
         raise HTTPException(status_code=400, detail=result['error'])
     return result
-
-
-@app.get('/api/pro/gravity/calculate')
-def pro_gravity_calculate(
-    rf_pct: float | None = Query(None),
-    erp_objective_pct: float | None = Query(None),
-    g_objective_pct: float | None = Query(None),
-    erp_buyer_pct: float | None = Query(None),
-    g_buyer_pct: float | None = Query(None),
-    as_of_date: str | None = Query(None, max_length=10),
-    horizon_years: float | None = Query(None, gt=0, le=100),
-):
-    # Manual scenario only; deliberately separate from Lite, Whisper, ATS, and historical backtests.
-    return calculate_gravity_scenario(
-        rf_pct, erp_objective_pct, g_objective_pct, erp_buyer_pct, g_buyer_pct,
-        as_of_date=as_of_date, horizon_years=horizon_years,
-    )
 
 
 @app.get('/api/pro/expectation/{symbol}')
@@ -430,32 +378,6 @@ def pro_events_calendar():
         return macro_events_calendar()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f'日程提醒数据获取失败：{exc}')
-
-
-@app.get('/api/pro/events/important')
-def pro_important_events(days: int = Query(90, ge=1, le=365), event_type: str = Query('ALL', alias='type')):
-    """Independent reminder-center API; events are read-only and isolated from Lite."""
-    try:
-        feed = get_cached_event_feed(macro_events_calendar)
-        return filter_important_events(feed, days=days, event_type=event_type)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f'重要日程读取失败：{str(exc)[:180]}')
-
-
-@app.get('/api/pro/events/important.ics')
-def pro_important_events_ics(days: int = Query(90, ge=1, le=365), event_type: str = Query('ALL', alias='type')):
-    """Download an iCalendar file with native calendar alarms for the selected window."""
-    try:
-        feed = get_cached_event_feed(macro_events_calendar)
-        data = filter_important_events(feed, days=days, event_type=event_type)
-        content = build_ics(data['events'])
-        return Response(
-            content=content,
-            media_type='text/calendar; charset=utf-8',
-            headers={'Content-Disposition': 'attachment; filename="AEL_Important_Schedule.ics"', 'Cache-Control': 'no-store'},
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f'重要日程提醒导出失败：{str(exc)[:180]}')
 
 
 @app.get('/api/pro/macro')

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 from io import StringIO
 import json
 import math
@@ -14,7 +13,6 @@ from typing import Any
 
 import pandas as pd
 import requests
-import yfinance as yf
 
 FRED_BASE = 'https://fred.stlouisfed.org/graph/fredgraph.csv'
 FED_FUNDS_RATE_URL = 'https://www.federalreserve.gov/FOMC/fundsrate.htm'
@@ -379,14 +377,12 @@ def _fomc_calendar() -> dict[str, Any]:
                     'verified_official_schedule': True,
                 })
         meetings = sorted(meetings, key=lambda x: x['start'])
-        today = datetime.now(ZoneInfo("America/New_York")).date()
-        # Strictly exclude meetings whose end date has passed; calendar consumers receive upcoming meetings only.
-        meetings = [m for m in meetings if datetime.fromisoformat(m['end']).date() >= today]
-        upcoming = meetings[0] if meetings else None
+        today = datetime.now(timezone.utc).date()
+        upcoming = next((m for m in meetings if datetime.fromisoformat(m['end']).date() >= today), None)
         return {'year':year, 'meetings':meetings, 'next_meeting':upcoming,
                 'source':'Federal Reserve FOMC calendar', 'source_url':FOMC_CALENDAR_URL,
                 'note':'仅列官方公布的会议日期；未把网页中的其他日期误识别为会议。'}
-    return _cached_get('fed:fomc-calendar:v3-upcoming-only', load, ttl=21600)
+    return _cached_get('fed:fomc-calendar:v2', load, ttl=21600)
 
 
 
@@ -398,8 +394,7 @@ def _polymarket_macro_markets(kind: str, reference_month: str) -> dict[str, Any]
     queries = {
         'CPI': [f'{month} Inflation US', f'Core CPI YoY {month}', f'Core CPI MoM {month}'],
         'PPI': [f'PPI YoY {month}', f'Producer Price Index {month}', f'{month} PPI inflation'],
-        '非农就业': [f'US Nonfarm Payrolls {month}', f'US jobs report {month}', f'US Employment Situation {month}'],
-        'PCE': [f'US Core PCE {month}', f'US PCE Price Index {month}', f'US Personal Consumption Expenditures inflation {month}'],
+        '非农就业': [f'Nonfarm Payrolls {month}', f'US jobs report {month}', f'Nonfarm employment {month}'],
     }.get(kind, [])
     def load():
         found=[]; errors=[]
@@ -409,25 +404,10 @@ def _polymarket_macro_markets(kind: str, reference_month: str) -> dict[str, Any]
                 for ev in data.get('events') or []:
                     title=str(ev.get('title') or '')
                     low=title.lower()
-                    # Do not mix country-specific inflation markets. Require explicit US geography
-                    # and an indicator-specific match; ambiguous generic 'inflation' markets are rejected.
-                    us_context = any(token in low for token in ('united states', 'u.s.', 'us ', ' us', 'american', 'usa'))
-                    if kind == 'CPI':
-                        relevant = ('cpi' in low or 'consumer price index' in low) and us_context
-                    elif kind == 'PPI':
-                        relevant = ('ppi' in low or 'producer price' in low) and us_context
-                    elif kind == 'PCE':
-                        relevant = ('pce' in low or 'personal consumption expenditures' in low) and us_context
-                    else:
-                        relevant = ('payroll' in low or 'jobs report' in low or 'employment situation' in low) and us_context
+                    relevant = (kind == 'CPI' and ('cpi' in low or 'inflation' in low)) or (kind == 'PPI' and ('ppi' in low or 'producer price' in low)) or (kind == '非农就业' and ('payroll' in low or 'jobs report' in low or 'employment situation' in low))
                     if not relevant or ev.get('active') is False or ev.get('closed') is True: continue
                     for m in (ev.get('markets') or []):
                         question=str(m.get('question') or ev.get('title') or '')
-                        qlow=question.lower()
-                        if kind == 'CPI' and not ('cpi' in qlow or 'consumer price index' in qlow): continue
-                        if kind == 'PPI' and not ('ppi' in qlow or 'producer price' in qlow): continue
-                        if kind == 'PCE' and not ('pce' in qlow or 'personal consumption expenditures' in qlow): continue
-                        if kind == '非农就业' and not ('payroll' in qlow or 'jobs report' in qlow or 'employment situation' in qlow): continue
                         outcomes=_parse_json_list(m.get('outcomes')); prices=_parse_json_list(m.get('outcomePrices'))
                         if not outcomes or not prices: continue
                         probs=[]
@@ -442,12 +422,12 @@ def _polymarket_macro_markets(kind: str, reference_month: str) -> dict[str, Any]
         rows=sorted(unique.values(), key=lambda x: (x.get('volume') or 0), reverse=True)[:4]
         return {'markets':rows,'source':'Polymarket','source_url':'https://polymarket.com/predictions/cpi-release' if kind=='CPI' else 'https://polymarket.com','as_of':datetime.now(timezone.utc).isoformat(),'errors':errors,
                 'interpretation':'显示市场本身的结果/阈值概率；只有市场规则明确对应“高于共识”时才可称为超预期概率。'}
-    return _cached_get(f'polymarket:macro:{kind}:us-strict-v2', load, ttl=180)
+    return _cached_get(f'polymarket:macro:{kind}', load, ttl=180)
 
 
 def macro_events_calendar() -> dict[str, Any]:
     """Unified event feed with exact release time, Polymarket odds, and Nasdaq-100 mega-cap earnings."""
-    today = datetime.now(ZoneInfo("America/New_York")).date()
+    today = datetime.now(timezone.utc).date()
     events=[]
     try:
         fomc=_fomc_calendar()
@@ -459,11 +439,10 @@ def macro_events_calendar() -> dict[str, Any]:
     releases=[
       ('2026-10-14','消费者价格指数（CPI）','CPI','September 2026'),('2026-10-15','生产者价格指数（PPI）','PPI','September 2026'),
       ('2026-11-06','就业情况报告（非农）','非农就业','October 2026'),('2026-11-10','消费者价格指数（CPI）','CPI','October 2026'),('2026-11-13','生产者价格指数（PPI）','PPI','October 2026'),
-      ('2026-12-04','就业情况报告（非农）','非农就业','November 2026'),('2026-12-10','消费者价格指数（CPI）','CPI','November 2026'),('2026-12-15','生产者价格指数（PPI）','PPI','November 2026'),
-      ('2026-10-29','个人收入与支出及PCE通胀','PCE','September 2026'),('2026-11-25','个人收入与支出及PCE通胀','PCE','October 2026'),('2026-12-23','个人收入与支出及PCE通胀','PCE','November 2026')]
+      ('2026-12-04','就业情况报告（非农）','非农就业','November 2026'),('2026-12-10','消费者价格指数（CPI）','CPI','November 2026'),('2026-12-15','生产者价格指数（PPI）','PPI','November 2026')]
     for d,title,kind,period in releases:
         if datetime.fromisoformat(d).date() >= today:
-            ev={'date':d,'end_date':d,'type':kind,'title':title,'reference_period':period,'time_et':'08:30 ET（美国东部时间）','source':('U.S. Bureau of Economic Analysis' if kind=='PCE' else 'U.S. Bureau of Labor Statistics'),'source_url':('https://www.bea.gov/news/schedule/' if kind=='PCE' else 'https://www.bls.gov/schedule/2026/'),'certainty':'official'}
+            ev={'date':d,'end_date':d,'type':kind,'title':title,'reference_period':period,'time_et':'08:30 ET（美国东部时间）','source':'U.S. Bureau of Labor Statistics','source_url':'https://www.bls.gov/schedule/2026/','certainty':'official'}
             try: ev['polymarket']=_polymarket_macro_markets(kind, period)
             except Exception as exc: ev['polymarket']={'markets':[],'errors':[str(exc)],'source':'Polymarket'}
             events.append(ev)
@@ -484,7 +463,7 @@ def macro_events_calendar() -> dict[str, Any]:
         except Exception: continue
     events.sort(key=lambda x:(x['date'],x['type'],x['title']))
     return {'as_of':datetime.now(timezone.utc).isoformat(),'events':events,
-      'sources':[{'name':'Federal Reserve FOMC calendar','url':FOMC_CALENDAR_URL},{'name':'BLS 2026 release calendar','url':'https://www.bls.gov/schedule/2026/'},{'name':'BEA PCE release calendar','url':'https://www.bea.gov/news/schedule/'},{'name':'Polymarket CPI markets','url':'https://polymarket.com/predictions/cpi-release'}],
+      'sources':[{'name':'Federal Reserve FOMC calendar','url':FOMC_CALENDAR_URL},{'name':'BLS 2026 release calendar','url':'https://www.bls.gov/schedule/2026/'},{'name':'Polymarket CPI markets','url':'https://polymarket.com/predictions/cpi-release'}],
       'note':'宏观发布日期及时间采用官方日历（ET）；Polymarket展示市场隐含概率，不自动等同于相对分析师共识的超预期概率；财报日期为预测时单独标注。'}
 
 def _parse_json_list(value):
