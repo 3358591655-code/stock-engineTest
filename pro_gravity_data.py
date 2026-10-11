@@ -130,3 +130,79 @@ def proxy_data_status() -> dict:
         "no_imputation": True,
         "no_live_data_claim": True,
     }
+
+
+def source_audit() -> dict:
+    """Audit whether packaged rows can support a source/date/horizon-matched formal Theta.
+
+    This is intentionally a coverage audit, not a synthetic data builder.
+    """
+    institutions = _read_csv(DATA_DIR / "institution_CMA_source_panel.csv")
+    panel = _read_csv(PANEL_FILE)
+    def coverage(rows, field):
+        n = len(rows)
+        present = sum(bool(str(r.get(field, "")).strip()) for r in rows)
+        return {"available_rows": present, "total_rows": n, "coverage_pct": round(present * 100 / n, 2) if n else None}
+    fields = {
+        "institution_expected_equity_return": "US_Equity",
+        "institution_expected_cash_return": "US_Cash",
+        "institution_explicit_erp_field": "buyer_erp_pct",
+        "institution_real_return_field": "US_Equity_r",
+        "institution_inflation_assumption": "US_Inflation",
+        "institution_real_earnings_growth": "gB_real_earnings_observed_pct",
+        "institution_nominal_earnings_growth_derived": "gB_nominal_earnings_derived_pct",
+        "institution_gravity_derived": "RB_derived_pct",
+    }
+    coverage_map = {label: coverage(institutions, field) for label, field in fields.items()}
+    dates = sorted({str(r.get("Date", "")).strip() for r in institutions if str(r.get("Date", "")).strip()})
+    formal_rows = sum(bool(str(r.get("formal_theta", "")).strip()) for r in panel)
+    erp_g_derivable_rows = sum(
+        bool(str(r.get("US_Equity", "")).strip()) and bool(str(r.get("US_Cash", "")).strip())
+        and bool(str(r.get("gB_real_earnings_observed_pct", "")).strip())
+        for r in institutions
+    )
+    # A formal observation needs matched buyer ERP/g and objective ERP/g, on a common
+    # as-of date and comparable horizon. The packaged table does not contain this full tuple.
+    required = ["buyer_erp_pct", "buyer_g_pct", "objective_erp_pct", "objective_g_pct", "risk_free_pct", "horizon_years"]
+    return {
+        "ok": True,
+        "audit_type": "SOURCE_COVERAGE_AUDIT",
+        "institution_source": {
+            "name": "Dahlquist & Ibert, Institutions’ Return Expectations Across Assets and Time",
+            "doi": "10.17632/xtx7tg6jpx.2",
+            "rows": len(institutions),
+            "providers": len({str(r.get("Provider", "")).strip() for r in institutions if str(r.get("Provider", "")).strip()}),
+            "date_min": dates[0] if dates else None,
+            "date_max": dates[-1] if dates else None,
+            "field_coverage": coverage_map,
+            "same_row_equity_minus_cash_plus_g_rows": erp_g_derivable_rows,
+            "mapping_blockers": [
+                "US_Cash is absent from the packaged institution_CMA_source_panel.csv; expected equity return alone cannot be treated as ERP.",
+                "The source panel does not contain an explicit buyer_erp_pct field; full replication archive schema must be reviewed before mapping.",
+                "Institution growth decomposition remains missing on a large share of rows; missing g is not imputed."
+            ],
+        },
+        "objective_source": {
+            "candidate_method": "Dahlquist-Ibert objective ERP: ln(1 + 1/CAPE) minus matched 10-year real yield",
+            "required_sources": ["Shiller monthly CAPE history", "matched-date 10-year real Treasury yield"],
+            "matched_objective_observations_loaded": 0,
+        },
+        "formal_theta_history_rows": formal_rows,
+        "formal_backtest_ready": False,
+        "missing_requirements": required,
+        "why_not_formal": [
+            "The packaged institution_CMA_source_panel.csv has no US_Cash field or explicit ERP field, so a same-row equity-minus-cash buyer ERP cannot be derived from this panel alone.",
+            "Institution expected total return is not itself ERP.",
+            "Institutional growth decomposition exists only for a subset and is not date/horizon matched to an objective-side ERP/g series.",
+            "The packaged files contain no validated, matched objective g series and no full as-of input tuples.",
+            "A formal backtest requires historical as-of signals plus forward returns; proxy signal comparisons are not a substitute.",
+        ],
+        "next_data_tasks": [
+            "Import the full published institutional subjective ERP panel, not just expected total-return fields.",
+            "Build objective ERP history from Shiller CAPE and real Treasury yields with a documented same-date rule.",
+            "Define and source objective g independently, with a fixed horizon and no post-date revisions.",
+            "Join only on valid as-of date and horizon; publish row-level source lineage before running out-of-sample tests.",
+        ],
+        "no_imputation": True,
+        "no_fabricated_values": True,
+    }
