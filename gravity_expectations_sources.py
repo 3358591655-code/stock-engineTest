@@ -43,17 +43,20 @@ def _finite(x: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
-def calculate_gravity(*, rf_real_pct: Any, erp_pct: Any, growth_pct: Any,
+def calculate_gravity(*, rf_nominal_pct: Any = None, rf_real_pct: Any = None, erp_pct: Any, growth_pct: Any,
                       basis: str, horizon_years: Any, source_role: str,
                       observation_date: str, available_date: str,
-                      expected_basis: str = 'real', expected_horizon_years: float = 10.0,
+                      expected_basis: str = 'nominal', expected_horizon_years: float = 10.0,
                       max_horizon_gap_years: float = 1.0) -> dict[str, Any]:
     """Calculate R only when required inputs are explicitly matched and traceable.
 
     source_role must be 'buyer_observation' or 'objective_baseline'. A proxy is
     accepted only as a proxy-labelled diagnostic, never as formal buyer evidence.
     """
-    rf, erp, g, h = map(_finite, (rf_real_pct, erp_pct, growth_pct, horizon_years))
+    # rf_nominal_pct is the canonical input. rf_real_pct remains a deprecated
+    # compatibility alias only; it is never silently accepted for nominal basis.
+    rf_input = rf_nominal_pct if rf_nominal_pct is not None else rf_real_pct
+    rf, erp, g, h = map(_finite, (rf_input, erp_pct, growth_pct, horizon_years))
     issues=[]
     if None in (rf, erp, g, h): issues.append('required_input_missing_or_non_numeric')
     if basis != expected_basis: issues.append('real_nominal_basis_mismatch')
@@ -68,10 +71,10 @@ def calculate_gravity(*, rf_real_pct: Any, erp_pct: Any, growth_pct: Any,
         return {'ok':False,'status':'UNAVAILABLE','issues':['denominator_or_rate_too_close_to_zero'],'R_pct':None,'source_role':source_role}
     formal = source_role in {'buyer_observation','objective_baseline'}
     return {'ok':True,'status':'FORMAL_CANDIDATE' if formal else 'PROXY_DIAGNOSTIC',
-            'R_pct':round(r,6),'rf_real_pct':rf,'erp_pct':erp,'growth_pct':g,
+            'R_pct':round(r,6),'rf_nominal_pct':rf,'erp_pct':erp,'growth_pct':g,
             'basis':basis,'horizon_years':h,'observation_date':observation_date,
             'available_date':available_date,'source_role':source_role,
-            'formal_eligible':formal,'formula':'R = real risk-free rate + ERP - real growth'}
+            'formal_eligible':formal,'formula':'R = nominal risk-free rate + nominal ERP - nominal growth'}
 
 def calculate_theta(r_objective: dict[str, Any], r_actual: dict[str, Any]) -> dict[str, Any]:
     if not (r_objective.get('ok') and r_actual.get('ok')):
