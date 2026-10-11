@@ -1,12 +1,10 @@
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import os
 import re
 import threading
-import hashlib
-import secrets
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 from time import time
@@ -19,7 +17,7 @@ from metrics import build_dashboard, technical_analysis, fibonacci_levels, pivot
 from pro_options import router as pro_options_router
 from pro_factor import analyze_factor
 from pro_risk import analyze_risk, analyze_portfolio
-from pro_macro import analyze_macro
+from pro_macro import analyze_macro, macro_events_calendar
 from pro_backtest import run_backtest
 from pro_expectation import analyze_expectation
 from pro_whisper import analyze_whisper, invalidate_whisper_cache
@@ -30,311 +28,13 @@ from pro_guidance_backtest import run_guidance_backtest
 from pro_polymarket import analyze_polymarket
 from ael_treasury import analyze_treasury
 from asset_data import get_asset, get_asset_index, get_asset_news
+from pro_gravity import calculate_scenario as calculate_gravity_scenario
+from pro_gravity_data import proxy_data_status, proxy_history, exploratory_backtest
+from pro_gravity_year_backtest import year_forward_performance
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = '2.6.41-TECH-POLY-COMPACT-ZH'
+APP_VERSION = '2.6.46-MACRO-POLY-EARNINGS'
 app = FastAPI(title='AEL 股票基本面驾驶舱', version=APP_VERSION)
-
-# ========================= AEL PASSIVE IP INTELLIGENCE =========================
-# Passive server-side network intelligence only. No GPS, browser fingerprinting,
-# hidden location access, or attempts to bypass VPN/proxy privacy controls.
-_IP_INTEL_CACHE = {}
-_IP_INTEL_LOCK = threading.Lock()
-_IP_INTEL_TTL = int(os.getenv("AEL_IP_INTEL_TTL", "21600"))
-_IP_HISTORY = {}
-_IP_HISTORY_LOCK = threading.Lock()
-_IP_HISTORY_MAX = max(100, int(os.getenv("AEL_IP_HISTORY_MAX", "5000")))
-
-def _ael_client_ip(request: Request):
-    # Railway's trusted edge header is preferred. X-Forwarded-For is only a
-    # fallback because arbitrary clients can forge it when no trusted proxy
-    # terminates the request.
-    ip = (request.headers.get("x-real-ip") or "").strip()
-    if ip:
-        return ip
-    xff = (request.headers.get("x-forwarded-for") or "").strip()
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else None
-
-def _ip_is_public(ip):
-    try:
-        import ipaddress
-        return ipaddress.ip_address(ip).is_global
-    except Exception:
-        return False
-
-def _ip_cache_get(ip):
-    now = time()
-    with _IP_INTEL_LOCK:
-        row = _IP_INTEL_CACHE.get(ip)
-        if row and now - row.get("ts", 0) < _IP_INTEL_TTL:
-            return row.get("data")
-    return None
-
-def _ip_cache_put(ip, data):
-    with _IP_INTEL_LOCK:
-        _IP_INTEL_CACHE[ip] = {"ts": time(), "data": data}
-
-def _ipinfo_lookup(ip):
-    # Optional token-backed provider. No token => no external call.
-    token = os.getenv("IPINFO_TOKEN", "").strip()
-    if not token:
-        return None
-    try:
-        r = requests.get(
-            f"https://ipinfo.io/{ip}/json",
-            headers={"Authorization": f"Bearer {token}", "User-Agent": "AEL-IP-Intelligence/1.0"},
-            timeout=4,
-        )
-        if not r.ok:
-            return None
-        data = r.json()
-        loc = data.get("loc") or ""
-        lat = lon = None
-        if "," in loc:
-            try:
-                lat, lon = [float(x) for x in loc.split(",", 1)]
-            except Exception:
-                pass
-        privacy = data.get("privacy") or {}
-        return {
-            "country": data.get("country"),
-            "region": data.get("region"),
-            "city": data.get("city"),
-            "postal": data.get("postal"),
-            "timezone": data.get("timezone"),
-            "latitude": lat,
-            "longitude": lon,
-            "asn": (data.get("asn") or {}).get("asn"),
-            "asn_name": (data.get("asn") or {}).get("name"),
-            "asn_domain": (data.get("asn") or {}).get("domain"),
-            "org": data.get("org"),
-            "network": data.get("network"),
-            "hostname": data.get("hostname"),
-            "privacy": {
-                "vpn": privacy.get("vpn"),
-                "proxy": privacy.get("proxy"),
-                "tor": privacy.get("tor"),
-                "relay": privacy.get("relay"),
-                "hosting": privacy.get("hosting"),
-                "service": privacy.get("service"),
-            },
-            "source": "ipinfo",
-        }
-    except Exception:
-        return None
-
-def _ipapi_lookup(ip):
-    try:
-        r = requests.get(
-            f"https://ipapi.co/{ip}/json/",
-            headers={"User-Agent": "AEL-IP-Intelligence/1.0"},
-            timeout=4,
-        )
-        if not r.ok:
-            return None
-        data = r.json()
-        return {
-            "country": data.get("country_name"),
-            "country_code": data.get("country_code"),
-            "region": data.get("region"),
-            "city": data.get("city"),
-            "postal": data.get("postal"),
-            "timezone": data.get("timezone"),
-            "latitude": data.get("latitude"),
-            "longitude": data.get("longitude"),
-            "asn": data.get("asn"),
-            "asn_name": data.get("org"),
-            "org": data.get("org"),
-            "network": None,
-            "hostname": None,
-            "privacy": {},
-            "source": "ipapi",
-        }
-    except Exception:
-        return None
-
-def _merge_ip_intel(a, b):
-    a, b = a or {}, b or {}
-    out = {}
-    for k in ("country", "country_code", "region", "city", "postal", "timezone",
-              "latitude", "longitude", "asn", "asn_name", "asn_domain", "org",
-              "network", "hostname"):
-        out[k] = a.get(k) if a.get(k) not in (None, "") else b.get(k)
-    p1, p2 = a.get("privacy") or {}, b.get("privacy") or {}
-    out["privacy"] = {k: (p1.get(k) if p1.get(k) is not None else p2.get(k))
-                      for k in set(p1) | set(p2)}
-    sources = [x for x in (a.get("source"), b.get("source")) if x]
-    out["sources"] = sources
-    # Consensus is deliberately conservative: only call fields consistent
-    # when both providers agree on the normalized value.
-    consensus = {}
-    for k in ("country", "region", "city", "timezone", "asn"):
-        av, bv = a.get(k), b.get(k)
-        if av and bv:
-            consensus[k] = (str(av).strip().lower() == str(bv).strip().lower())
-    out["consensus"] = consensus
-    out["geo_confidence"] = (
-        "high" if consensus.get("country") and consensus.get("region") and consensus.get("city")
-        else "medium" if consensus.get("country")
-        else "low"
-    )
-    return out
-
-def _passive_ip_intel(ip):
-    if not ip:
-        return {"available": False, "reason": "no_client_ip"}
-    if not _ip_is_public(ip):
-        return {"available": False, "ip": ip, "public": False, "reason": "non_public_ip"}
-
-    cached = _ip_cache_get(ip)
-    if cached:
-        return cached
-
-    # Providers are independent; failures are tolerated.
-    a = _ipinfo_lookup(ip)
-    b = _ipapi_lookup(ip)
-    data = _merge_ip_intel(a, b)
-    data.update({"available": bool(a or b), "ip": ip, "public": True})
-    _ip_cache_put(ip, data)
-    return data
-
-def _ael_parse_user_agent(ua):
-    """Parse reliable, directly exposed UA fields only; never fingerprint the device."""
-    ua = ua or ""
-    os_name = None
-    os_version = None
-    m = re.search(r'Android\s+([0-9]+(?:\.[0-9]+)*)', ua, re.I)
-    if m:
-        os_name, os_version = 'Android', m.group(1)
-    else:
-        m = re.search(r'(?:iPhone|CPU(?: iPhone)? OS)\s*([0-9_]+)', ua, re.I)
-        if m:
-            os_name, os_version = 'iOS', m.group(1).replace('_', '.')
-
-    model = None
-    for pattern in (r';\s*([A-Z][A-Z0-9_-]{2,20})\s+Build/', r';\s*([A-Z][A-Z0-9_-]{2,20})\s*;\s*(?:wv|[A-Za-z]+Browser)', r';\s*([A-Z][A-Z0-9_-]{2,20})\s*;'):
-        m = re.search(pattern, ua)
-        if m:
-            candidate = m.group(1)
-            if candidate.lower() not in {'linux','mobile','wv','build','android'}:
-                model = candidate
-                break
-    manufacturer = None
-    if model:
-        prefix = re.match(r'([A-Za-z]+)', model)
-        if prefix:
-            pfx = prefix.group(1).lower()
-            manufacturer = {'vivo':'vivo','oneplus':'OnePlus','oppo':'OPPO','pixel':'Google','sm':'Samsung','mi':'Xiaomi','redmi':'Xiaomi','mix':'Xiaomi','huawei':'Huawei','honor':'HONOR'}.get(pfx)
-    browser = None
-    browser_patterns = [
-        (r'(VivoBrowser/[\w.]+)', 'VivoBrowser'),
-        (r'(Chrome/[\w.]+)', 'Chrome'),
-        (r'(Edg/[\w.]+)', 'Edge'),
-        (r'(Firefox/[\w.]+)', 'Firefox'),
-        (r'(Safari/[\w.]+)', 'Safari'),
-    ]
-    for pattern, _ in browser_patterns:
-        m = re.search(pattern, ua, re.I)
-        if m:
-            browser = m.group(1)
-            break
-    return {'manufacturer': manufacturer, 'model': model, 'os': os_name, 'os_version': os_version, 'browser': browser}
-
-
-def _ael_record_ip_history(ip, request, intel):
-    if not ip:
-        return None
-    ua = request.headers.get("user-agent", "-")
-    device = _ael_parse_user_agent(ua)
-    now = time()
-    # Use a random server-issued visitor token if a client cookie exists;
-    # otherwise keep the association at IP level. Do not fingerprint devices.
-    visitor = request.cookies.get("ael_visitor")
-    key = visitor or f"ip:{ip}"
-    row = {
-        "ip": ip,
-        "time": datetime.now(timezone.utc).isoformat(),
-        "path": request.url.path,
-        "method": request.method,
-        "user_agent": ua,
-        "device_manufacturer": device.get("manufacturer"),
-        "device_model": device.get("model"),
-        "os": device.get("os"),
-        "os_version": device.get("os_version"),
-        "browser": device.get("browser"),
-        "country": intel.get("country"),
-        "region": intel.get("region"),
-        "city": intel.get("city"),
-        "asn": intel.get("asn"),
-        "isp": intel.get("org") or intel.get("asn_name"),
-        "vpn": (intel.get("privacy") or {}).get("vpn"),
-        "proxy": (intel.get("privacy") or {}).get("proxy"),
-        "tor": (intel.get("privacy") or {}).get("tor"),
-        "hosting": (intel.get("privacy") or {}).get("hosting"),
-    }
-    with _IP_HISTORY_LOCK:
-        history = _IP_HISTORY.setdefault(key, [])
-        history.append(row)
-        if len(history) > _IP_HISTORY_MAX:
-            del history[:-_IP_HISTORY_MAX]
-        previous = history[-2] if len(history) > 1 else None
-    changes = []
-    if previous:
-        for field in ("ip", "country", "region", "city", "asn", "vpn", "proxy", "tor"):
-            if row.get(field) != previous.get(field):
-                changes.append(field)
-    row["changes_from_previous"] = changes
-    return row
-
-@app.middleware("http")
-async def ael_passive_ip_intelligence(request: Request, call_next):
-    ip = _ael_client_ip(request)
-    intel = _passive_ip_intel(ip)
-    request.state.ael_client_ip = ip
-    request.state.ael_ip_intel = intel
-    _ael_record_ip_history(ip, request, intel)
-
-    response = await call_next(request)
-
-    # Issue a non-sensitive random visitor identifier only if absent. This is
-    # a session/analytics identifier, not a device fingerprint.
-    if not request.cookies.get("ael_visitor"):
-        token = secrets.token_urlsafe(18)
-        response.set_cookie(
-            "ael_visitor", token, max_age=60 * 60 * 24 * 90,
-            httponly=True, secure=True, samesite="lax", path="/"
-        )
-
-    print(
-        "[AEL ACCESS INTEL] "
-        f"IP={ip or '-'} "
-        f"PUBLIC={intel.get('public', False)} "
-        f"COUNTRY={intel.get('country') or '-'} "
-        f"REGION={intel.get('region') or '-'} "
-        f"CITY={intel.get('city') or '-'} "
-        f"ASN={intel.get('asn') or '-'} "
-        f"ORG={intel.get('org') or intel.get('asn_name') or '-'} "
-        f"VPN={(intel.get('privacy') or {}).get('vpn', '-')} "
-        f"PROXY={(intel.get('privacy') or {}).get('proxy', '-')} "
-        f"TOR={(intel.get('privacy') or {}).get('tor', '-')} "
-        f"HOSTING={(intel.get('privacy') or {}).get('hosting', '-')} "
-        f"DEVICE={(_ael_parse_user_agent(request.headers.get('user-agent', '-')).get('manufacturer') or '-')} "
-        f"MODEL={(_ael_parse_user_agent(request.headers.get('user-agent', '-')).get('model') or '-')} "
-        f"OS={(_ael_parse_user_agent(request.headers.get('user-agent', '-')).get('os') or '-')} {(_ael_parse_user_agent(request.headers.get('user-agent', '-')).get('os_version') or '')} "
-        f"BROWSER={(_ael_parse_user_agent(request.headers.get('user-agent', '-')).get('browser') or '-')} "
-        f"PATH={request.url.path}"
-    )
-    return response
-
-@app.get("/api/admin/ip-intelligence/{ip}")
-def admin_ip_intelligence(ip: str):
-    # Read-only diagnostic endpoint. Protect this endpoint at the deployment
-    # layer before exposing it publicly; it does not bypass provider limits.
-    return _passive_ip_intel(ip)
-
-# ======================= END PASSIVE IP INTELLIGENCE =========================
 # Pro is an extension layer. It has independent routes and never changes Lite scan/core logic.
 app.include_router(pro_options_router)
 
@@ -423,85 +123,6 @@ app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
 def index():
     return FileResponse(BASE / 'static' / 'index.html')
 
-# --- WeChat Official Account JS-SDK sidecar ---
-# Secrets are read only from environment variables and are never returned to the client.
-_WECHAT_TOKEN_CACHE = {'value': None, 'expires_at': 0.0}
-_WECHAT_TICKET_CACHE = {'value': None, 'expires_at': 0.0}
-_WECHAT_LOCK = threading.RLock()
-
-def _wechat_appid():
-    return (os.getenv('WECHAT_APPID') or '').strip()
-
-def _wechat_appsecret():
-    return (os.getenv('WECHAT_APPSECRET') or '').strip()
-
-def _wechat_access_token():
-    appid, secret = _wechat_appid(), _wechat_appsecret()
-    if not appid or not secret:
-        raise RuntimeError('WECHAT_APPID / WECHAT_APPSECRET 未配置')
-    now = time()
-    if _WECHAT_TOKEN_CACHE['value'] and now < _WECHAT_TOKEN_CACHE['expires_at']:
-        return _WECHAT_TOKEN_CACHE['value']
-    with _WECHAT_LOCK:
-        now = time()
-        if _WECHAT_TOKEN_CACHE['value'] and now < _WECHAT_TOKEN_CACHE['expires_at']:
-            return _WECHAT_TOKEN_CACHE['value']
-        r = requests.get('https://api.weixin.qq.com/cgi-bin/token', params={
-            'grant_type': 'client_credential', 'appid': appid, 'secret': secret
-        }, timeout=8)
-        r.raise_for_status()
-        data = r.json()
-        token = data.get('access_token')
-        if not token:
-            raise RuntimeError(f"微信 access_token 获取失败：{data.get('errcode')} {data.get('errmsg', '')}")
-        _WECHAT_TOKEN_CACHE.update(value=token, expires_at=now + max(60, int(data.get('expires_in', 7200)) - 300))
-        return token
-
-def _wechat_jsapi_ticket():
-    now = time()
-    if _WECHAT_TICKET_CACHE['value'] and now < _WECHAT_TICKET_CACHE['expires_at']:
-        return _WECHAT_TICKET_CACHE['value']
-    with _WECHAT_LOCK:
-        now = time()
-        if _WECHAT_TICKET_CACHE['value'] and now < _WECHAT_TICKET_CACHE['expires_at']:
-            return _WECHAT_TICKET_CACHE['value']
-        token = _wechat_access_token()
-        r = requests.get('https://api.weixin.qq.com/cgi-bin/ticket/getticket', params={
-            'access_token': token, 'type': 'jsapi'
-        }, timeout=8)
-        r.raise_for_status()
-        data = r.json()
-        ticket = data.get('ticket')
-        if data.get('errcode') != 0 or not ticket:
-            raise RuntimeError(f"微信 jsapi_ticket 获取失败：{data.get('errcode')} {data.get('errmsg', '')}")
-        _WECHAT_TICKET_CACHE.update(value=ticket, expires_at=now + max(60, int(data.get('expires_in', 7200)) - 300))
-        return ticket
-
-@app.get('/api/wechat/status')
-def wechat_status():
-    return {'configured': bool(_wechat_appid() and _wechat_appsecret())}
-
-@app.get('/api/wechat/config')
-def wechat_config(url: str = Query(..., min_length=1, max_length=2048)):
-    page_url = url.split('#', 1)[0]
-    if not page_url.startswith('https://'):
-        raise HTTPException(status_code=400, detail='微信 JS-SDK 页面地址必须使用 HTTPS')
-    try:
-        ticket = _wechat_jsapi_ticket()
-        nonce_str = secrets.token_hex(8)
-        timestamp = int(time())
-        raw = f'jsapi_ticket={ticket}&noncestr={nonce_str}&timestamp={timestamp}&url={page_url}'
-        signature = hashlib.sha1(raw.encode('utf-8')).hexdigest()
-        return {
-            'ok': True,
-            'appId': _wechat_appid(),
-            'timestamp': timestamp,
-            'nonceStr': nonce_str,
-            'signature': signature,
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f'微信 JS-SDK 配置获取失败：{str(exc)[:180]}')
-
 @app.get('/api/health')
 def health():
     return {'ok': True, 'service': 'stock-fundamental-dashboard', 'version': APP_VERSION}
@@ -532,6 +153,64 @@ def asset_news(symbol: str):
         return get_asset_news(symbol)
     except Exception as exc:
         return {'ok': False, 'symbol': symbol.upper(), 'news': [], 'error': str(exc)[:180]}
+
+
+@app.get('/api/pro/gravity/status')
+def pro_gravity_status():
+    # Research status only. Formal history remains empty until source/date/horizon matching is validated.
+    return proxy_data_status()
+
+
+@app.get('/api/pro/gravity/history')
+def pro_gravity_history(
+    start_year: int = Query(1997, ge=1900, le=2100),
+    end_year: int = Query(2024, ge=1900, le=2100),
+):
+    # Packaged annual proxy panel; formal Theta remains null unless independently validated.
+    if start_year > end_year:
+        raise HTTPException(status_code=400, detail='start_year 不能大于 end_year')
+    return proxy_history(start_year, end_year)
+
+
+@app.get('/api/pro/gravity/backtest')
+def pro_gravity_backtest(
+    horizon_years: int = Query(1, ge=1, le=5),
+    min_institutions: int = Query(1, ge=1, le=10),
+):
+    # Descriptive inherited proxy comparison only, never presented as formal Theta validation.
+    if horizon_years not in (1, 3, 5):
+        raise HTTPException(status_code=400, detail='horizon_years 仅支持 1、3、5')
+    return exploratory_backtest(horizon_years, min_institutions)
+
+
+@app.get('/api/pro/gravity/year-backtest')
+def pro_gravity_year_backtest(
+    year: int = Query(..., ge=1900, le=2100),
+    index: str = Query('SP500', pattern='^(SP500|NASDAQ|DOW)$'),
+    metric: str = Query('gravity_ratio', pattern='^(buffett|cape|R_actual|R_objective|gravity_ratio)$'),
+):
+    # Year-anchored observed index performance; metric signal history is gated separately.
+    result = year_forward_performance(year, index, metric)
+    if not result.get('ok') and result.get('error', '').startswith('年份须在'):
+        raise HTTPException(status_code=400, detail=result['error'])
+    return result
+
+
+@app.get('/api/pro/gravity/calculate')
+def pro_gravity_calculate(
+    rf_pct: float | None = Query(None),
+    erp_objective_pct: float | None = Query(None),
+    g_objective_pct: float | None = Query(None),
+    erp_buyer_pct: float | None = Query(None),
+    g_buyer_pct: float | None = Query(None),
+    as_of_date: str | None = Query(None, max_length=10),
+    horizon_years: float | None = Query(None, gt=0, le=100),
+):
+    # Manual scenario only; deliberately separate from Lite, Whisper, ATS, and historical backtests.
+    return calculate_gravity_scenario(
+        rf_pct, erp_objective_pct, g_objective_pct, erp_buyer_pct, g_buyer_pct,
+        as_of_date=as_of_date, horizon_years=horizon_years,
+    )
 
 
 @app.get('/api/pro/expectation/{symbol}')
@@ -680,6 +359,15 @@ def pro_treasury():
         return analyze_treasury()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f'美国国债研究失败：{str(exc)[:180]}')
+
+@app.get('/api/pro/events/calendar')
+def pro_events_calendar():
+    """Unified official macro and estimated mega-cap earnings calendar."""
+    try:
+        return macro_events_calendar()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'日程提醒数据获取失败：{exc}')
+
 
 @app.get('/api/pro/macro')
 def pro_macro():

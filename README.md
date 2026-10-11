@@ -76,3 +76,17 @@ The backtest is optional and never runs on Lite, SINGLE, or MARKET SCAN requests
 
 ## V2.6.6 Confidence
 The Whisper confidence field is now uncalibrated until the user explicitly runs the historical Whisper Backtest Lab. Historical Calibration is a score, not a probability. The completed backtest feeds an isolated calibration cache; the live Whisper endpoint reads that cache without launching a historical backtest, preserving Lite/SINGLE/MARKET SCAN latency.
+
+---
+
+## V2.6.43 双重重力历史代理数据与探索性对照
+
+版本标记：`2.6.43-DOUBLE-GRAVITY-DATA`。
+
+新增独立 Pro 研究接口：
+- `GET /api/pro/gravity/status`
+- `GET /api/pro/gravity/history?start_year=1997&end_year=2024`
+- `GET /api/pro/gravity/backtest?horizon_years=1&min_institutions=1`
+- `GET /api/pro/gravity/calculate`（手动情景计算）
+
+`data/gravity/` 中的年度面板和信号比较仅是历史代理/探索性数据。正式Theta仍为0条；正式数据未通过日期、来源、期限匹配与验证闸门前，网站必须显示“暂无数据”，不能把代理对照宣传为正式回测结论。Lite、Whisper、ATS、Options等现有业务逻辑保持独立。

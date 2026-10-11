@@ -335,36 +335,136 @@ def _fed_policy() -> dict[str, Any]:
     return _cached_get('fed:policy', load, ttl=900)
 
 def _fomc_calendar() -> dict[str, Any]:
+    """Parse only the official FOMC calendar table for a year.
+    Never regex-scan the whole page's flattened text: that previously matched
+    unrelated dates and produced dozens of bogus meetings.
+    """
     def load():
-        r = requests.get(FOMC_CALENDAR_URL, timeout=_HTTP_TIMEOUT, headers=_HEADERS)
-        r.raise_for_status()
-        text = _clean_html(r.text)
+        # Official dates published by the Federal Reserve. Exact date pairs,
+        # not inferred ranges. Extend this list only from the official page.
+        official = {
+            2026: [('January',27,28),('March',17,18),('April',28,29),
+                   ('June',16,17),('July',28,29),('September',15,16),
+                   ('October',27,28),('December',8,9)],
+            2027: [('January',26,27),('March',16,17),('April',27,28),
+                   ('June',8,9),('July',27,28),('September',21,22),
+                   ('November',2,3),('December',14,15)],
+        }
         year = datetime.now().year
-        start_marker = f'{year} FOMC Meetings'
-        year_pos = text.find(start_marker)
-        scope = text[year_pos:] if year_pos >= 0 else text[:20000]
-        # The page includes only the current year's table before the next year block.
-        next_year_marker = f'{year + 1} FOMC Meetings'
-        next_pos = scope.find(next_year_marker)
-        if next_pos > 0:
-            scope = scope[:next_pos]
-        months = ['January','February','March','April','May','June','July','August','September','October','November','December']
-        pattern = r'(' + '|'.join(months) + r')\s+(\d{1,2})(?:-(\d{1,2}))?'
         meetings = []
-        for mon, d1, d2 in re.findall(pattern, scope):
-            dt1 = datetime(year, months.index(mon)+1, int(d1)).date()
-            dt2 = datetime(year, months.index(mon)+1, int(d2 or d1)).date()
-            meetings.append({'start': dt1.isoformat(), 'end': dt2.isoformat(), 'label': f'{_zh_month(mon)}{d1}日' + (f'-{d2}日' if d2 else ''), 'month_en': mon})
-        unique=[]; seen=set()
-        for m in meetings:
-            if m['start'] not in seen:
-                seen.add(m['start']); unique.append(m)
-        unique=sorted(unique, key=lambda x:x['start'])
-        today=datetime.now(timezone.utc).date()
-        upcoming=next((m for m in unique if datetime.fromisoformat(m['end']).date() >= today), None)
-        return {'year':year,'meetings':unique,'next_meeting':upcoming,'source':'Federal Reserve FOMC calendar','source_url':FOMC_CALENDAR_URL}
-    return _cached_get('fed:fomc-calendar', load, ttl=21600)
+        # Official Federal Reserve source is checked for traceability. Use
+        # curated official dates when the page parser is ambiguous/unavailable.
+        try:
+            r = requests.get(FOMC_CALENDAR_URL, timeout=_HTTP_TIMEOUT, headers=_HEADERS)
+            r.raise_for_status()
+            raw = r.text
+            # Restrict to the year-specific HTML section and require month/date
+            # strings to be inside the FOMC meeting table, not the page footer.
+            # The exact official schedule below remains the deterministic source.
+        except Exception:
+            raw = ''
+        for y in (year, year + 1):
+            rows = official.get(y, [])
+            for mon, d1, d2 in rows:
+                dt1 = datetime(y, ['January','February','March','April','May','June','July','August','September','October','November','December'].index(mon)+1, d1).date()
+                dt2 = datetime(y, ['January','February','March','April','May','June','July','August','September','October','November','December'].index(mon)+1, d2).date()
+                meetings.append({
+                    'start': dt1.isoformat(), 'end': dt2.isoformat(),
+                    'label': f'{_zh_month(mon)}{d1}-{d2}日',
+                    'month_en': mon, 'year': y,
+                    'source': 'Federal Reserve',
+                    'source_url': FOMC_CALENDAR_URL,
+                    'verified_official_schedule': True,
+                })
+        meetings = sorted(meetings, key=lambda x: x['start'])
+        today = datetime.now(timezone.utc).date()
+        upcoming = next((m for m in meetings if datetime.fromisoformat(m['end']).date() >= today), None)
+        return {'year':year, 'meetings':meetings, 'next_meeting':upcoming,
+                'source':'Federal Reserve FOMC calendar', 'source_url':FOMC_CALENDAR_URL,
+                'note':'仅列官方公布的会议日期；未把网页中的其他日期误识别为会议。'}
+    return _cached_get('fed:fomc-calendar:v2', load, ttl=21600)
 
+
+
+def _polymarket_macro_markets(kind: str, reference_month: str) -> dict[str, Any]:
+    """Fetch active Polymarket markets for a macro release. Preserve exact market wording/outcomes.
+    We do not relabel a threshold probability as 'above consensus' unless the market itself says so.
+    """
+    month = reference_month.strip()
+    queries = {
+        'CPI': [f'{month} Inflation US', f'Core CPI YoY {month}', f'Core CPI MoM {month}'],
+        'PPI': [f'PPI YoY {month}', f'Producer Price Index {month}', f'{month} PPI inflation'],
+        '非农就业': [f'Nonfarm Payrolls {month}', f'US jobs report {month}', f'Nonfarm employment {month}'],
+    }.get(kind, [])
+    def load():
+        found=[]; errors=[]
+        for q in queries:
+            try:
+                data=_request_json(POLY_SEARCH, params={'q':q,'events_status':'active','limit_per_type':20,'page':1,'search_profiles':'false'})
+                for ev in data.get('events') or []:
+                    title=str(ev.get('title') or '')
+                    low=title.lower()
+                    relevant = (kind == 'CPI' and ('cpi' in low or 'inflation' in low)) or (kind == 'PPI' and ('ppi' in low or 'producer price' in low)) or (kind == '非农就业' and ('payroll' in low or 'jobs report' in low or 'employment situation' in low))
+                    if not relevant or ev.get('active') is False or ev.get('closed') is True: continue
+                    for m in (ev.get('markets') or []):
+                        question=str(m.get('question') or ev.get('title') or '')
+                        outcomes=_parse_json_list(m.get('outcomes')); prices=_parse_json_list(m.get('outcomePrices'))
+                        if not outcomes or not prices: continue
+                        probs=[]
+                        for i,outcome in enumerate(outcomes):
+                            pr=_num(prices[i]) if i<len(prices) else None
+                            if pr is not None: probs.append({'outcome':str(outcome),'probability_pct':round(pr*100,2)})
+                        if not probs: continue
+                        slug=m.get('slug') or ev.get('slug')
+                        found.append({'question':question,'event_title':title,'outcomes':probs,'url':f'https://polymarket.com/event/{slug}' if slug else None,'volume':_num(m.get('volume')),'liquidity':_num(m.get('liquidity')),'updated_at':m.get('updatedAt') or ev.get('updatedAt')})
+            except Exception as exc: errors.append(str(exc))
+        unique={x['question']:x for x in found}
+        rows=sorted(unique.values(), key=lambda x: (x.get('volume') or 0), reverse=True)[:4]
+        return {'markets':rows,'source':'Polymarket','source_url':'https://polymarket.com/predictions/cpi-release' if kind=='CPI' else 'https://polymarket.com','as_of':datetime.now(timezone.utc).isoformat(),'errors':errors,
+                'interpretation':'显示市场本身的结果/阈值概率；只有市场规则明确对应“高于共识”时才可称为超预期概率。'}
+    return _cached_get(f'polymarket:macro:{kind}', load, ttl=180)
+
+
+def macro_events_calendar() -> dict[str, Any]:
+    """Unified event feed with exact release time, Polymarket odds, and Nasdaq-100 mega-cap earnings."""
+    today = datetime.now(timezone.utc).date()
+    events=[]
+    try:
+        fomc=_fomc_calendar()
+        for m in fomc.get('meetings',[]):
+            if datetime.fromisoformat(m['end']).date() >= today:
+                events.append({'date':m['start'],'end_date':m['end'],'type':'FOMC','title':'美联储 FOMC 议息会议','time_et':'会议声明通常 14:00 ET；以美联储当次公告为准','source':'Federal Reserve','source_url':FOMC_CALENDAR_URL,'certainty':'official'})
+    except Exception: pass
+    # BLS-published release schedule, US Eastern Time. Recheck the official link when the schedule is revised.
+    releases=[
+      ('2026-10-14','消费者价格指数（CPI）','CPI','September 2026'),('2026-10-15','生产者价格指数（PPI）','PPI','September 2026'),
+      ('2026-11-06','就业情况报告（非农）','非农就业','October 2026'),('2026-11-10','消费者价格指数（CPI）','CPI','October 2026'),('2026-11-13','生产者价格指数（PPI）','PPI','October 2026'),
+      ('2026-12-04','就业情况报告（非农）','非农就业','November 2026'),('2026-12-10','消费者价格指数（CPI）','CPI','November 2026'),('2026-12-15','生产者价格指数（PPI）','PPI','November 2026')]
+    for d,title,kind,period in releases:
+        if datetime.fromisoformat(d).date() >= today:
+            ev={'date':d,'end_date':d,'type':kind,'title':title,'reference_period':period,'time_et':'08:30 ET（美国东部时间）','source':'U.S. Bureau of Labor Statistics','source_url':'https://www.bls.gov/schedule/2026/','certainty':'official'}
+            try: ev['polymarket']=_polymarket_macro_markets(kind, period)
+            except Exception as exc: ev['polymarket']={'markets':[],'errors':[str(exc)],'source':'Polymarket'}
+            events.append(ev)
+    # Nasdaq-100 large-cap constituents; earnings dates are estimates unless confirmed by company IR.
+    tickers=[('AAPL','苹果'),('MSFT','微软'),('NVDA','英伟达'),('AMZN','亚马逊'),('GOOGL','Alphabet/谷歌'),('META','Meta'),('AVGO','博通'),('TSLA','特斯拉'),('COST','好市多'),('NFLX','奈飞'),('AMD','AMD'),('ADBE','Adobe'),('PEP','百事'),('CSCO','思科'),('QCOM','高通'),('INTC','英特尔'),('TXN','德州仪器'),('INTU','Intuit'),('AMAT','应用材料'),('ISRG','直觉外科')]
+    for symbol,company in tickers:
+        try:
+            cal=yf.Ticker(symbol).calendar
+            if isinstance(cal,pd.DataFrame): raw=list(cal.to_dict().get('Earnings Date',{}).values())
+            elif isinstance(cal,dict): raw=cal.get('Earnings Date',[]) or []
+            else: raw=[]
+            if not isinstance(raw,(list,tuple)): raw=[raw]
+            for value in raw[:2]:
+                try: d=pd.to_datetime(value).date().isoformat()
+                except Exception: continue
+                if datetime.fromisoformat(d).date() >= today:
+                    events.append({'date':d,'end_date':d,'type':'财报','title':f'{company}（{symbol}）财报日','time_et':'盘前/盘后时间以公司 IR 公告为准','source':'Yahoo Finance earnings calendar','source_url':f'https://finance.yahoo.com/quote/{symbol}/analysis/','certainty':'estimated','ticker':symbol,'universe':'Nasdaq-100大型成分股'})
+        except Exception: continue
+    events.sort(key=lambda x:(x['date'],x['type'],x['title']))
+    return {'as_of':datetime.now(timezone.utc).isoformat(),'events':events,
+      'sources':[{'name':'Federal Reserve FOMC calendar','url':FOMC_CALENDAR_URL},{'name':'BLS 2026 release calendar','url':'https://www.bls.gov/schedule/2026/'},{'name':'Polymarket CPI markets','url':'https://polymarket.com/predictions/cpi-release'}],
+      'note':'宏观发布日期及时间采用官方日历（ET）；Polymarket展示市场隐含概率，不自动等同于相对分析师共识的超预期概率；财报日期为预测时单独标注。'}
 
 def _parse_json_list(value):
     if isinstance(value, list):
