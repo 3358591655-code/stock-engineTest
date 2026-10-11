@@ -31,9 +31,10 @@ from asset_data import get_asset, get_asset_index, get_asset_news
 from pro_gravity_data import proxy_data_status, proxy_history, exploratory_backtest
 from pro_gravity_year_backtest import year_forward_performance
 from pro_gravity_live import automatic_dashboard, automatic_history, automatic_year_backtest, charter_theory_history
+from pro_gravity_countries import country_catalog, country_gravity_history
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = '2.6.46-CHARTER-THEORY-TRENDS'
+APP_VERSION = '2.6.55-CROSS-COUNTRY-LONG-R-TRENDS'
 app = FastAPI(title='AEL 股票基本面驾驶舱', version=APP_VERSION)
 # Pro is an extension layer. It has independent routes and never changes Lite scan/core logic.
 app.include_router(pro_options_router)
@@ -121,7 +122,7 @@ app.mount('/static', StaticFiles(directory=BASE / 'static'), name='static')
 
 @app.get('/')
 def index():
-    return FileResponse(BASE / 'static' / 'index.html')
+    return FileResponse(BASE / 'static' / 'index.html', headers={'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0'})
 
 @app.get('/api/health')
 def health():
@@ -177,6 +178,22 @@ def pro_gravity_automatic_history(
 def pro_gravity_charter_theory_history(limit: int = Query(320, ge=40, le=600), refresh: bool = Query(False)):
     """Long-run history for Q/V = M2/P and 1/P = Q/(M2*V)."""
     return charter_theory_history(force=refresh, limit=limit)
+
+
+@app.get('/api/pro/gravity/countries')
+def pro_gravity_countries():
+    """Selectable countries for charter-theory gravity research; USA is the default."""
+    return country_catalog()
+
+
+@app.get('/api/pro/gravity/countries/history')
+def pro_gravity_countries_history(
+    country: str = Query('USA', pattern='^(USA|CHN|DEU|JPN|IND|GBR|FRA|ITA|RUS|KOR)$'),
+    limit: int = Query(1200, ge=12, le=1200),
+    refresh: bool = Query(False),
+):
+    """Long-run R objective/buyer trends; non-US objective is explicitly a cross-country proxy."""
+    return country_gravity_history(country_code=country, limit=limit, force=refresh)
 
 
 @app.get('/api/pro/gravity/automatic/year-backtest')

@@ -70,11 +70,12 @@ FRED_SERIES = {
 }
 TTL_SECONDS = int(os.getenv("AEL_GRAVITY_CACHE_TTL", "21600"))
 _HTTP = requests.Session()
-_HTTP.headers.update({"User-Agent": "Mozilla/5.0 (compatible; AELResearch/2.6.43; +https://github.com/)"})
+_HTTP.headers.update({"User-Agent": "Mozilla/5.0 (compatible; AELResearch/2.6.55; +https://github.com/)"})
 _LOCK = threading.RLock()
 _BUYER_LOCK = threading.Lock()
 _CACHE: dict[str, dict[str, Any]] = {}
 _BUYER_WORKER: threading.Thread | None = None
+_BUYER_LAST_ATTEMPT_AT = 0.0
 _BUYER_STATUS: dict[str, Any] = {"status": "NOT_STARTED", "message": "机构预期数据源尚未自动读取。"}
 
 
@@ -910,8 +911,8 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _get_buyer_status(start_if_missing: bool = True) -> dict[str, Any]:
-    global _BUYER_WORKER, _BUYER_STATUS
+def _get_buyer_status(start_if_missing: bool = True, force_retry: bool = False) -> dict[str, Any]:
+    global _BUYER_WORKER, _BUYER_STATUS, _BUYER_LAST_ATTEMPT_AT
     if SOURCE_MANIFEST.exists():
         try:
             manifest = json.loads(SOURCE_MANIFEST.read_text(encoding="utf-8"))
@@ -921,25 +922,34 @@ def _get_buyer_status(start_if_missing: bool = True) -> dict[str, Any]:
                 _BUYER_STATUS = manifest
         except Exception:
             pass
-    if start_if_missing and not SOURCE_ARCHIVE.exists() and _BUYER_STATUS.get("status") in {"NOT_STARTED", "DOWNLOAD_FAILED"}:
+    retry_cooldown = max(60, int(os.getenv("AEL_BUYER_DOWNLOAD_RETRY_SECONDS", "300")))
+    retry_due = force_retry or (time.time() - _BUYER_LAST_ATTEMPT_AT >= retry_cooldown)
+    if start_if_missing and not SOURCE_ARCHIVE.exists() and _BUYER_STATUS.get("status") in {"NOT_STARTED", "DOWNLOAD_FAILED"} and retry_due:
         with _BUYER_LOCK:
-            if _BUYER_WORKER is None or not _BUYER_WORKER.is_alive():
-                _BUYER_STATUS = {"status": "DOWNLOADING", "message": "正在后台获取论文官方机构预期原始数据，不需要手动输入。", "source_url": MENDELEY_DATASET_URL}
+            retry_due_locked = force_retry or (time.time() - _BUYER_LAST_ATTEMPT_AT >= retry_cooldown)
+            if retry_due_locked and (_BUYER_WORKER is None or not _BUYER_WORKER.is_alive()):
+                _BUYER_LAST_ATTEMPT_AT = time.time()
+                _BUYER_STATUS = {"status": "DOWNLOADING", "message": "正在后台获取论文官方机构预期原始数据；自动轮询只读取状态，不会反复重启下载。", "source_url": MENDELEY_DATASET_URL, "attempt_started_at": _now_utc()}
                 def worker():
                     global _BUYER_STATUS
                     result = _download_institution_archive()
                     _BUYER_STATUS = result
                 _BUYER_WORKER = threading.Thread(target=worker, name="ael-gravity-institution-data", daemon=True)
                 _BUYER_WORKER.start()
-    elif SOURCE_ARCHIVE.exists() and _BUYER_STATUS.get("status") in {"NOT_STARTED", "DOWNLOAD_FAILED"}:
+    elif SOURCE_ARCHIVE.exists() and _BUYER_STATUS.get("status") in {"NOT_STARTED", "DOWNLOAD_FAILED"} and retry_due:
         with _BUYER_LOCK:
-            if _BUYER_WORKER is None or not _BUYER_WORKER.is_alive():
+            retry_due_locked = force_retry or (time.time() - _BUYER_LAST_ATTEMPT_AT >= retry_cooldown)
+            if retry_due_locked and (_BUYER_WORKER is None or not _BUYER_WORKER.is_alive()):
+                _BUYER_LAST_ATTEMPT_AT = time.time()
                 def worker_existing():
                     global _BUYER_STATUS
                     _BUYER_STATUS = _download_institution_archive()
                 _BUYER_WORKER = threading.Thread(target=worker_existing, name="ael-gravity-institution-parse", daemon=True)
                 _BUYER_WORKER.start()
-    return dict(_BUYER_STATUS)
+    status = dict(_BUYER_STATUS)
+    if status.get("status") == "DOWNLOAD_FAILED" and not force_retry:
+        status["retry_after_seconds"] = max(0, int(retry_cooldown - (time.time() - _BUYER_LAST_ATTEMPT_AT)))
+    return status
 
 
 def _latest_le(rows: list[dict[str, Any]], as_of: str) -> dict[str, Any] | None:
@@ -1351,7 +1361,7 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
         macro_model["A_over_M_formula"] = "(alpha_proxy_fraction * M1_USD_billions * V) / (R_percent/100); R must be positive; output unit USD billions"
     index_meta = INDEXES.get(index, INDEXES["SP500"])
     return {
-        "ok": True, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.53-NOMINAL-R-REALIZED-ERP",
+        "ok": True, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.55-CROSS-COUNTRY-LONG-R-TRENDS",
         "as_of": _now_utc(), "requested_index": index, "index_name": index_meta["name"], "index_symbol": index_meta["symbol"],
         "metrics": {
             "buffett_indicator_pct_gdp": round(bvalue, 3) if bvalue is not None else None,
@@ -1468,11 +1478,11 @@ def automatic_dashboard(index: str = "SP500", force: bool = False) -> dict[str, 
         raw = _safe_get_data(force)
         # The macro bundle can be cached while the institutional ZIP is downloading.
         # Refresh the lightweight source status separately so the UI sees completion without a 6h wait.
-        raw["buyer"] = _get_buyer_status(start_if_missing=True)
+        raw["buyer"] = _get_buyer_status(start_if_missing=True, force_retry=force)
         return _metrics_bundle(idx, raw)
     except Exception as exc:
-        buyer = _get_buyer_status(start_if_missing=True)
-        return {"ok": False, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.53-NOMINAL-R-REALIZED-ERP",
+        buyer = _get_buyer_status(start_if_missing=True, force_retry=force)
+        return {"ok": False, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.55-CROSS-COUNTRY-LONG-R-TRENDS",
                 "requested_index": idx, "status": "SOURCE_ERROR", "message": "自动指标源暂不可用，正在保留可追溯的错误信息；不需要也不允许手动填数。",
                 "error": str(exc)[:300], "buyer_source": {k:v for k,v in buyer.items() if k != "records"},
                 "sources": [{"name":"Mendeley institutional expectations", "url": MENDELEY_DATASET_URL}]}
