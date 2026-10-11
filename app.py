@@ -34,7 +34,7 @@ from pro_gravity_live import automatic_dashboard, automatic_history, automatic_y
 from pro_gravity_countries import country_catalog, country_gravity_history
 
 BASE = Path(__file__).resolve().parent
-APP_VERSION = '2.6.57-COUNTRY-THEORY-DATA-QUALITY'
+APP_VERSION = '2.6.59-MACRO-RESTORE-IMPORTANT-CALENDAR'
 app = FastAPI(title='AEL 股票基本面驾驶舱', version=APP_VERSION)
 # Pro is an extension layer. It has independent routes and never changes Lite scan/core logic.
 app.include_router(pro_options_router)

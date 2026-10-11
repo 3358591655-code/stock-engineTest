@@ -31,7 +31,7 @@ SPF_INFLATION_URL = "https://www.philadelphiafed.org/-/media/frbp/assets/surveys
 FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 _HTTP = requests.Session()
-_HTTP.headers.update({"User-Agent": "Mozilla/5.0 (compatible; AELResearch/2.6.57; +https://github.com/)"})
+_HTTP.headers.update({"User-Agent": "Mozilla/5.0 (compatible; AELResearch/2.6.58; +https://github.com/)"})
 _LOCK = threading.RLock()
 _CACHE: dict[str, dict[str, Any]] = {}
 
@@ -39,7 +39,7 @@ _CACHE: dict[str, dict[str, Any]] = {}
 # and South Korea as explicitly-added markets (GDP ranks change over time).
 COUNTRIES: dict[str, dict[str, Any]] = {
     "USA": {"name":"美国", "iso2":"US", "wb":"USA", "currency":"USD", "symbol":"^GSPC", "rf":"DGS10", "cash":"TB3MS", "group":"us", "strict_us":True, "return_label":"Shiller 月度价格+股息总回报", "rf_url":"https://fred.stlouisfed.org/series/DGS10"},
-    "CHN": {"name":"中国", "iso2":"CN", "wb":"CHN", "currency":"CNY", "symbol":"000001.SS", "rf":"IRLTLT01CNM156N", "cash":"IR3TIB01CNM156N", "group":"em", "return_label":"上证综指历史回报代理；指数分红再投资口径未统一", "rf_url":"https://yield.chinabond.com.cn/"},
+    "CHN": {"name":"中国", "iso2":"CN", "wb":"CHN", "currency":"CNY", "symbol":"000001.SS", "rf":"IRLTLT01CNM156N", "cash":"IRSTCI01CNM156N", "group":"em", "return_label":"上证综指历史回报代理；指数分红再投资口径未统一", "rf_url":"https://yield.chinabond.com.cn/"},
     "DEU": {"name":"德国", "iso2":"DE", "wb":"DEU", "currency":"EUR", "symbol":"^GDAXI", "rf":"IRLTLT01DEM156N", "cash":"IR3TIB01DEM156N", "group":"dm_ex_us", "return_label":"DAX Performance 指数（含再投资分红的指数口径）", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01DEM156N"},
     "JPN": {"name":"日本", "iso2":"JP", "wb":"JPN", "currency":"JPY", "symbol":"^N225", "rf":"IRLTLT01JPM156N", "cash":"IR3TIB01JPM156N", "group":"dm_ex_us", "return_label":"日经225历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01JPM156N"},
     "IND": {"name":"印度", "iso2":"IN", "wb":"IND", "currency":"INR", "symbol":"^BSESN", "rf":"INDIRLTLT01STM", "cash":"IRSTCI01INM156N", "group":"em", "return_label":"Sensex 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/INDIRLTLT01STM"},
@@ -47,7 +47,7 @@ COUNTRIES: dict[str, dict[str, Any]] = {
     "FRA": {"name":"法国", "iso2":"FR", "wb":"FRA", "currency":"EUR", "symbol":"^FCHI", "rf":"IRLTLT01FRM156N", "cash":"IR3TIB01FRM156N", "group":"dm_ex_us", "return_label":"CAC 40 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01FRM156N"},
     "ITA": {"name":"意大利", "iso2":"IT", "wb":"ITA", "currency":"EUR", "symbol":"FTSEMIB.MI", "rf":"IRLTLT01ITM156N", "cash":"IR3TIB01ITM156N", "group":"dm_ex_us", "return_label":"FTSE MIB 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01ITM156N"},
     "RUS": {"name":"俄罗斯", "iso2":"RU", "wb":"RUS", "currency":"RUB", "symbol":"IMOEX.ME", "rf":"IRLTLT01RUM156N", "cash":"IR3TIB01RUM156N", "group":"em", "return_label":"MOEX 指数历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01RUM156N", "rf_stale_note":"OECD/FRED 俄罗斯长期利率序列仅到 2018 年，趋势止于最后可靠观测。"},
-    "KOR": {"name":"韩国", "iso2":"KR", "wb":"KOR", "currency":"KRW", "symbol":"^KS11", "rf":"IRLTLT01KRM156N", "cash":"IR3TIB01KRM156N", "group":"em", "return_label":"KOSPI 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01KRM156N"},
+    "KOR": {"name":"韩国", "iso2":"KR", "wb":"KOR", "currency":"KRW", "symbol":"^KS11", "rf":"IRLTLT01KRM156N", "cash":"IRSTCI01KRM156N", "group":"em", "return_label":"KOSPI 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01KRM156N"},
 }
 
 
@@ -58,7 +58,7 @@ def country_catalog() -> dict[str, Any]:
                      "group":c["group"],"market_symbol":c["symbol"],"currency":c.get("currency","LCU"),
                      "objective_mode":"US_STRICT" if c.get("strict_us") else "CROSS_COUNTRY_PROXY",
                      "rf_source":c.get("rf_url"),"return_basis":c["return_label"]})
-    return {"ok":True,"version":"2.6.57","default_country":"USA","count":len(rows),
+    return {"ok":True,"version":"2.6.58","default_country":"USA","count":len(rows),
             "scope_note":"名义 GDP 前八基准经济体（美国、中国、德国、日本、印度、英国、法国、意大利）+ 指定扩展俄罗斯、韩国；GDP 排名随年份变化。",
             "countries":rows}
 
@@ -636,7 +636,7 @@ def country_gravity_history(country_code: str="USA", limit: int=600, force: bool
     code=str(country_code or "USA").upper()
     if code not in COUNTRIES: code="USA"
     c=COUNTRIES[code]; limit=max(12,min(1200,int(limit)))
-    cache_key=f"history_v2657_{code}"
+    cache_key=f"history_v2659_{code}"
     if not force:
         cached=_cache_read(cache_key)
         if cached is not None: return cached

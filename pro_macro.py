@@ -13,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 import requests
+import yfinance as yf
 
 FRED_BASE = 'https://fred.stlouisfed.org/graph/fredgraph.csv'
 FED_FUNDS_RATE_URL = 'https://www.federalreserve.gov/FOMC/fundsrate.htm'
@@ -31,18 +32,22 @@ SERIES = {
     'dgs2': ('DGS2', '美国2年期国债收益率', '%', 'daily'),
     'dgs10': ('DGS10', '美国10年期国债收益率', '%', 'daily'),
     'curve_10y2y': ('T10Y2Y', '10Y-2Y期限利差', '%', 'daily'),
-    'cpi': ('CPIAUCSL', 'CPI消费者价格指数', 'index', 'monthly'),
+    'cpi': ('CPIAUCNS', 'CPI消费者价格指数（未季调）', 'index', 'monthly'),
+    'ppi': ('WPSFD4', 'PPI最终需求生产者价格指数（季调）', 'index', 'monthly'),
+    'pce': ('PCEPI', 'PCE个人消费支出价格指数', 'index', 'monthly'),
+    'core_pce': ('PCEPILFE', '核心PCE价格指数', 'index', 'monthly'),
     'unemployment': ('UNRATE', '失业率', '%', 'monthly'),
-    'payrolls': ('PAYEMS', '非农就业人数', 'thousand', 'monthly'),
+    'payrolls': ('PAYEMS', '非农就业人数（千人）', 'thousand', 'monthly'),
     'industrial_production': ('INDPRO', '工业生产指数', 'index', 'monthly'),
     'hy_spread': ('BAMLH0A0HYM2', '美国高收益债利差', '%', 'daily'),
     'broad_usd': ('DTWEXBGS', '美元广义指数', 'index', 'daily'),
 }
 
 BLS_SERIES = {
-    'cpi': ('CUSR0000SA0', 'CPI消费者价格指数', 'index', 'monthly'),
+    'cpi': ('CUUR0000SA0', 'CPI消费者价格指数（未季调）', 'index', 'monthly'),
+    'ppi': ('WPSFD4', 'PPI最终需求生产者价格指数（季调）', 'index', 'monthly'),
     'unemployment': ('LNS14000000', '失业率', '%', 'monthly'),
-    'payrolls': ('CES0000000001', '非农就业人数', 'thousand', 'monthly'),
+    'payrolls': ('CES0000000001', '非农就业人数（千人）', 'thousand', 'monthly'),
 }
 
 _CACHE: dict[str, dict[str, Any]] = {}
@@ -147,25 +152,59 @@ def _payload_from_df(key: str, df: pd.DataFrame, source: str, source_url: str) -
 
 def _fred_series(series_id: str, limit_years: int = 12) -> pd.DataFrame:
     def load():
+        errors=[]
         params = {'id': series_id, 'cosd': f'{datetime.now().year - limit_years}-01-01'}
-        r = requests.get(FRED_BASE, params=params, timeout=_HTTP_TIMEOUT, headers=_HEADERS)
-        r.raise_for_status()
-        df = pd.read_csv(StringIO(r.text))
-        if 'DATE' not in df.columns or series_id not in df.columns:
-            raise RuntimeError(f'FRED {series_id}返回字段不完整')
-        df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
-        df[series_id] = pd.to_numeric(df[series_id], errors='coerce')
-        df = df.dropna(subset=['DATE', series_id]).sort_values('DATE')
-        if df.empty:
-            raise RuntimeError(f'FRED {series_id}无有效数据')
-        return df[['DATE', series_id]].rename(columns={series_id: 'VALUE'}).reset_index(drop=True)
+        try:
+            r = requests.get(FRED_BASE, params=params, timeout=_HTTP_TIMEOUT, headers=_HEADERS)
+            r.raise_for_status()
+            df = pd.read_csv(StringIO(r.text))
+            if 'DATE' not in df.columns or series_id not in df.columns:
+                raise RuntimeError(f'FRED {series_id}返回字段不完整')
+            df['DATE'] = pd.to_datetime(df['DATE'], errors='coerce')
+            df[series_id] = pd.to_numeric(df[series_id], errors='coerce')
+            df = df.dropna(subset=['DATE', series_id]).sort_values('DATE')
+            if df.empty:
+                raise RuntimeError(f'FRED {series_id}无有效数据')
+            out=df[['DATE', series_id]].rename(columns={series_id: 'VALUE'}).reset_index(drop=True)
+            out.attrs['source']='FRED';out.attrs['source_url']=f'{FRED_BASE}?id={series_id}'
+            return out
+        except Exception as exc:
+            errors.append(f'FRED直连：{str(exc)[:120]}')
+        # Independent public mirror fallback: DBnomics republishes the FRED
+        # provider series and requires no API key. Keep the source transparent.
+        try:
+            url=f'https://api.db.nomics.world/v22/series/FRED/{series_id}'
+            r=requests.get(url, params={'observations':'1'}, timeout=12, headers=_HEADERS)
+            r.raise_for_status(); payload=r.json()
+            docs=(payload.get('series') or {}).get('docs') or []
+            if not docs: raise RuntimeError('DBnomics没有返回序列文档')
+            doc=docs[0]; periods=doc.get('period') or []; values=doc.get('value') or []
+            rows=[]
+            for period,value in zip(periods,values):
+                v=_num(value)
+                if v is None: continue
+                try: date=pd.to_datetime(str(period), errors='raise')
+                except Exception: continue
+                rows.append({'DATE':date,'VALUE':v})
+            df=pd.DataFrame(rows)
+            if df.empty: raise RuntimeError('DBnomics序列没有有效观测')
+            df['DATE']=pd.to_datetime(df['DATE'],errors='coerce');df['VALUE']=pd.to_numeric(df['VALUE'],errors='coerce')
+            df=df.dropna(subset=['DATE','VALUE']).sort_values('DATE')
+            start=pd.Timestamp(datetime.now().year-limit_years,1,1)
+            df=df[df['DATE']>=start].reset_index(drop=True)
+            if df.empty: raise RuntimeError('DBnomics序列在所需区间内无观测')
+            df.attrs['source']='DBnomics（FRED镜像）';df.attrs['source_url']=url
+            return df
+        except Exception as exc:
+            errors.append(f'DBnomics备用源：{str(exc)[:120]}')
+        raise RuntimeError('；'.join(errors))
     return _cached_get(f'fred:{series_id}:{limit_years}', load)
 
 
 def _fred_payload(key: str) -> dict[str, Any]:
     sid = SERIES[key][0]
     df = _fred_series(sid)
-    return _payload_from_df(key, df, 'FRED', f'{FRED_BASE}?id={sid}')
+    return _payload_from_df(key, df, df.attrs.get('source','FRED'), df.attrs.get('source_url',f'{FRED_BASE}?id={sid}'))
 
 
 def _bls_payloads(keys: list[str]) -> dict[str, dict[str, Any]]:
@@ -394,35 +433,46 @@ def _polymarket_macro_markets(kind: str, reference_month: str) -> dict[str, Any]
     queries = {
         'CPI': [f'{month} Inflation US', f'Core CPI YoY {month}', f'Core CPI MoM {month}'],
         'PPI': [f'PPI YoY {month}', f'Producer Price Index {month}', f'{month} PPI inflation'],
+        'PCE': [f'PCE inflation {month}', f'Core PCE {month}', f'PCE price index {month}'],
         '非农就业': [f'Nonfarm Payrolls {month}', f'US jobs report {month}', f'Nonfarm employment {month}'],
     }.get(kind, [])
     def load():
         found=[]; errors=[]
-        for q in queries:
+        def search(q):
             try:
-                data=_request_json(POLY_SEARCH, params={'q':q,'events_status':'active','limit_per_type':20,'page':1,'search_profiles':'false'})
-                for ev in data.get('events') or []:
-                    title=str(ev.get('title') or '')
-                    low=title.lower()
-                    relevant = (kind == 'CPI' and ('cpi' in low or 'inflation' in low)) or (kind == 'PPI' and ('ppi' in low or 'producer price' in low)) or (kind == '非农就业' and ('payroll' in low or 'jobs report' in low or 'employment situation' in low))
-                    if not relevant or ev.get('active') is False or ev.get('closed') is True: continue
-                    for m in (ev.get('markets') or []):
-                        question=str(m.get('question') or ev.get('title') or '')
-                        outcomes=_parse_json_list(m.get('outcomes')); prices=_parse_json_list(m.get('outcomePrices'))
-                        if not outcomes or not prices: continue
-                        probs=[]
-                        for i,outcome in enumerate(outcomes):
-                            pr=_num(prices[i]) if i<len(prices) else None
-                            if pr is not None: probs.append({'outcome':str(outcome),'probability_pct':round(pr*100,2)})
-                        if not probs: continue
-                        slug=m.get('slug') or ev.get('slug')
-                        found.append({'question':question,'event_title':title,'outcomes':probs,'url':f'https://polymarket.com/event/{slug}' if slug else None,'volume':_num(m.get('volume')),'liquidity':_num(m.get('liquidity')),'updated_at':m.get('updatedAt') or ev.get('updatedAt')})
-            except Exception as exc: errors.append(str(exc))
+                return q, _request_json(POLY_SEARCH, params={'q':q,'events_status':'active','limit_per_type':20,'page':1,'search_profiles':'false'}), None
+            except Exception as exc:
+                return q, None, str(exc)
+        # Parallel queries keep the calendar responsive when one market search stalls.
+        with ThreadPoolExecutor(max_workers=max(1,min(3,len(queries)))) as pool:
+            results=[future.result() for future in as_completed([pool.submit(search,q) for q in queries])]
+        for q,data,error in results:
+            if error:
+                errors.append(f'{q}: {error}')
+                continue
+            for ev in (data or {}).get('events') or []:
+                title=str(ev.get('title') or '')
+                low=title.lower()
+                relevant = (kind == 'CPI' and ('cpi' in low or 'inflation' in low)) or (kind == 'PPI' and ('ppi' in low or 'producer price' in low)) or (kind == 'PCE' and ('pce' in low or 'personal consumption expenditures' in low)) or (kind == '非农就业' and ('payroll' in low or 'jobs report' in low or 'employment situation' in low))
+                if not relevant or ev.get('active') is False or ev.get('closed') is True: continue
+                for market in (ev.get('markets') or []):
+                    question=str(market.get('question') or ev.get('title') or '')
+                    outcomes=_parse_json_list(market.get('outcomes')); prices=_parse_json_list(market.get('outcomePrices'))
+                    if not outcomes or not prices: continue
+                    probs=[]
+                    for i,outcome in enumerate(outcomes):
+                        pr=_num(prices[i]) if i<len(prices) else None
+                        if pr is not None: probs.append({'outcome':str(outcome),'probability_pct':round(pr*100,2)})
+                    if not probs: continue
+                    slug=market.get('slug') or ev.get('slug')
+                    found.append({'question':question,'event_title':title,'outcomes':probs,'url':f'https://polymarket.com/event/{slug}' if slug else None,'volume':_num(market.get('volume')),'liquidity':_num(market.get('liquidity')),'updated_at':market.get('updatedAt') or ev.get('updatedAt')})
         unique={x['question']:x for x in found}
         rows=sorted(unique.values(), key=lambda x: (x.get('volume') or 0), reverse=True)[:4]
         return {'markets':rows,'source':'Polymarket','source_url':'https://polymarket.com/predictions/cpi-release' if kind=='CPI' else 'https://polymarket.com','as_of':datetime.now(timezone.utc).isoformat(),'errors':errors,
                 'interpretation':'显示市场本身的结果/阈值概率；只有市场规则明确对应“高于共识”时才可称为超预期概率。'}
-    return _cached_get(f'polymarket:macro:{kind}', load, ttl=180)
+    # Include the reference month in the cache key; otherwise the first month's
+    # odds can be incorrectly reused for later CPI/PPI/PCE releases.
+    return _cached_get(f'polymarket:macro:{kind}:{month.lower()}', load, ttl=180)
 
 
 def macro_events_calendar() -> dict[str, Any]:
@@ -437,18 +487,39 @@ def macro_events_calendar() -> dict[str, Any]:
     except Exception: pass
     # BLS-published release schedule, US Eastern Time. Recheck the official link when the schedule is revised.
     releases=[
-      ('2026-10-14','消费者价格指数（CPI）','CPI','September 2026'),('2026-10-15','生产者价格指数（PPI）','PPI','September 2026'),
-      ('2026-11-06','就业情况报告（非农）','非农就业','October 2026'),('2026-11-10','消费者价格指数（CPI）','CPI','October 2026'),('2026-11-13','生产者价格指数（PPI）','PPI','October 2026'),
-      ('2026-12-04','就业情况报告（非农）','非农就业','November 2026'),('2026-12-10','消费者价格指数（CPI）','CPI','November 2026'),('2026-12-15','生产者价格指数（PPI）','PPI','November 2026')]
-    for d,title,kind,period in releases:
+      ('2026-10-14','消费者价格指数（CPI）','CPI','September 2026','BLS'),('2026-10-15','生产者价格指数（PPI）','PPI','September 2026','BLS'),('2026-10-29','个人消费支出价格指数（PCE）','PCE','September 2026','BEA'),
+      ('2026-11-06','就业情况报告（非农）','非农就业','October 2026','BLS'),('2026-11-10','消费者价格指数（CPI）','CPI','October 2026','BLS'),('2026-11-13','生产者价格指数（PPI）','PPI','October 2026','BLS'),('2026-11-25','个人消费支出价格指数（PCE）','PCE','October 2026','BEA'),
+      ('2026-12-04','就业情况报告（非农）','非农就业','November 2026','BLS'),('2026-12-10','消费者价格指数（CPI）','CPI','November 2026','BLS'),('2026-12-15','生产者价格指数（PPI）','PPI','November 2026','BLS'),('2026-12-23','个人消费支出价格指数（PCE）','PCE','November 2026','BEA')]
+    for d,title,kind,period,agency in releases:
         if datetime.fromisoformat(d).date() >= today:
-            ev={'date':d,'end_date':d,'type':kind,'title':title,'reference_period':period,'time_et':'08:30 ET（美国东部时间）','source':'U.S. Bureau of Labor Statistics','source_url':'https://www.bls.gov/schedule/2026/','certainty':'official'}
-            try: ev['polymarket']=_polymarket_macro_markets(kind, period)
-            except Exception as exc: ev['polymarket']={'markets':[],'errors':[str(exc)],'source':'Polymarket'}
+            source='U.S. Bureau of Economic Analysis' if agency=='BEA' else 'U.S. Bureau of Labor Statistics'
+            source_url='https://www.bea.gov/news/schedule/' if agency=='BEA' else 'https://www.bls.gov/schedule/2026/'
+            ev={'date':d,'end_date':d,'type':kind,'title':title,'reference_period':period,'time_et':'08:30 ET（美国东部时间）','source':source,'source_url':source_url,'certainty':'official'}
+            # Markets are usually listed only for the next release. Defer lookup
+            # until after the list is built so current release odds can be fetched concurrently.
+            days_ahead=(datetime.fromisoformat(d).date()-today).days
+            ev['_poly_lookup'] = days_ahead <= 35
+            ev['_poly_kind'] = kind
+            ev['_poly_period'] = period
             events.append(ev)
+    macro_events=[e for e in events if e.get('_poly_kind')]
+    def enrich_macro_event(ev):
+        if not ev.get('_poly_lookup'):
+            ev['polymarket']={'markets':[],'source':'Polymarket','note':'尚未进入可核验的临近发布窗口'}
+        else:
+            try: ev['polymarket']=_polymarket_macro_markets(ev['_poly_kind'], ev['_poly_period'])
+            except Exception as exc: ev['polymarket']={'markets':[],'errors':[str(exc)],'source':'Polymarket'}
+        for key in ('_poly_lookup','_poly_kind','_poly_period'): ev.pop(key,None)
+        return ev
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix='ael-poly-calendar') as pool:
+        future_map={pool.submit(enrich_macro_event,ev):ev for ev in macro_events}
+        for future in as_completed(future_map):
+            try: future.result()
+            except Exception as exc: future_map[future]['polymarket']={'markets':[],'errors':[str(exc)],'source':'Polymarket'}
     # Nasdaq-100 large-cap constituents; earnings dates are estimates unless confirmed by company IR.
     tickers=[('AAPL','苹果'),('MSFT','微软'),('NVDA','英伟达'),('AMZN','亚马逊'),('GOOGL','Alphabet/谷歌'),('META','Meta'),('AVGO','博通'),('TSLA','特斯拉'),('COST','好市多'),('NFLX','奈飞'),('AMD','AMD'),('ADBE','Adobe'),('PEP','百事'),('CSCO','思科'),('QCOM','高通'),('INTC','英特尔'),('TXN','德州仪器'),('INTU','Intuit'),('AMAT','应用材料'),('ISRG','直觉外科')]
-    for symbol,company in tickers:
+    def fetch_earnings(item):
+        symbol,company=item; rows=[]
         try:
             cal=yf.Ticker(symbol).calendar
             if isinstance(cal,pd.DataFrame): raw=list(cal.to_dict().get('Earnings Date',{}).values())
@@ -459,11 +530,17 @@ def macro_events_calendar() -> dict[str, Any]:
                 try: d=pd.to_datetime(value).date().isoformat()
                 except Exception: continue
                 if datetime.fromisoformat(d).date() >= today:
-                    events.append({'date':d,'end_date':d,'type':'财报','title':f'{company}（{symbol}）财报日','time_et':'盘前/盘后时间以公司 IR 公告为准','source':'Yahoo Finance earnings calendar','source_url':f'https://finance.yahoo.com/quote/{symbol}/analysis/','certainty':'estimated','ticker':symbol,'universe':'Nasdaq-100大型成分股'})
-        except Exception: continue
+                    rows.append({'date':d,'end_date':d,'type':'财报','title':f'{company}（{symbol}）财报日','time_et':'盘前/盘后时间以公司 IR 公告为准','source':'Yahoo Finance earnings calendar','source_url':f'https://finance.yahoo.com/quote/{symbol}/analysis/','certainty':'estimated','ticker':symbol,'universe':'纳斯达克100大型成分股'})
+        except Exception: pass
+        return rows
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix='ael-earnings-calendar') as pool:
+        futures=[pool.submit(fetch_earnings,item) for item in tickers]
+        for future in as_completed(futures):
+            try: events.extend(future.result())
+            except Exception: pass
     events.sort(key=lambda x:(x['date'],x['type'],x['title']))
     return {'as_of':datetime.now(timezone.utc).isoformat(),'events':events,
-      'sources':[{'name':'Federal Reserve FOMC calendar','url':FOMC_CALENDAR_URL},{'name':'BLS 2026 release calendar','url':'https://www.bls.gov/schedule/2026/'},{'name':'Polymarket CPI markets','url':'https://polymarket.com/predictions/cpi-release'}],
+      'sources':[{'name':'Federal Reserve FOMC calendar','url':FOMC_CALENDAR_URL},{'name':'BLS 2026 release calendar','url':'https://www.bls.gov/schedule/2026/'},{'name':'BEA release calendar','url':'https://www.bea.gov/news/schedule/'},{'name':'Polymarket macro markets','url':'https://polymarket.com'}],
       'note':'宏观发布日期及时间采用官方日历（ET）；Polymarket展示市场隐含概率，不自动等同于相对分析师共识的超预期概率；财报日期为预测时单独标注。'}
 
 def _parse_json_list(value):
@@ -588,14 +665,14 @@ def analyze_macro() -> dict[str, Any]:
     except Exception as exc:
         source_status['纽约联储']='异常'; errors.append(f'纽约联储: {str(exc)[:180]}')
     try:
-        bls=_bls_payloads(['cpi','unemployment','payrolls']); data.update(bls)
-        source_status['BLS']=f'正常（{len(bls)}/3）'
+        bls=_bls_payloads(['cpi','ppi','unemployment','payrolls']); data.update(bls)
+        source_status['BLS']=f'正常（{len(bls)}/4）'
     except Exception as exc:
         source_status['BLS']='异常'; errors.append(f'BLS: {str(exc)[:180]}')
 
     # FRED is still used for long-history / niche series and as a fallback for
     # anything the direct source did not provide.
-    fred_keys=['fedfunds','dgs2','dgs10','curve_10y2y','cpi','unemployment','payrolls','industrial_production','hy_spread','broad_usd']
+    fred_keys=['fedfunds','dgs2','dgs10','curve_10y2y','cpi','ppi','pce','core_pce','unemployment','payrolls','industrial_production','hy_spread','broad_usd']
     def fetch(key): return key, _fred_payload(key)
     with ThreadPoolExecutor(max_workers=6, thread_name_prefix='ael-fred') as pool:
         futures={pool.submit(fetch,k):k for k in fred_keys if k not in data or k in {'industrial_production','hy_spread','broad_usd'}}
@@ -605,7 +682,7 @@ def analyze_macro() -> dict[str, Any]:
                 k,p=future.result()
                 if k not in data:
                     data[k]=p
-                source_status.setdefault('FRED','正常')
+                source_status.setdefault(p.get('source','FRED'),'正常')
             except Exception as exc:
                 source_status.setdefault('FRED','部分异常'); errors.append(f'FRED/{key}: {str(exc)[:180]}')
 

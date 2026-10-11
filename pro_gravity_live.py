@@ -70,7 +70,7 @@ FRED_SERIES = {
 }
 TTL_SECONDS = int(os.getenv("AEL_GRAVITY_CACHE_TTL", "21600"))
 _HTTP = requests.Session()
-_HTTP.headers.update({"User-Agent": "Mozilla/5.0 (compatible; AELResearch/2.6.57; +https://github.com/)"})
+_HTTP.headers.update({"User-Agent": "Mozilla/5.0 (compatible; AELResearch/2.6.58; +https://github.com/)"})
 _LOCK = threading.RLock()
 _BUYER_LOCK = threading.Lock()
 _CACHE: dict[str, dict[str, Any]] = {}
@@ -1297,7 +1297,8 @@ def _build_objective_gravity_history(cape_rows: list[dict[str, Any]], nominal_yi
         if not rf_row or rf_row.get("value") is None:
             continue
         r_obj = float(rf_row["value"]) + erp - g
-        out.append({"date": row["date"], "value": round(r_obj, 6), "R_objective": round(r_obj, 6),
+        out.append({"date": row["date"], "value": round(r_obj, 6) if r_obj > 0 else None,
+                    "raw_formula_result_pct": round(r_obj, 6), "valid_for_gravity": r_obj > 0, "R_objective": round(r_obj, 6),
                     "rf_nominal_pct": float(rf_row["value"]), "rf_date": rf_row["date"],
                     "erp_realized_10y_pct": erp, "equity_total_return_10y_pct": equity_return,
                     "cash_return_10y_pct": cash_return, "g_nominal_earnings_10y_pct": g,
@@ -1307,6 +1308,80 @@ def _build_objective_gravity_history(cape_rows: list[dict[str, Any]], nominal_yi
                     "available_date_proxy": (dt + timedelta(days=45)).isoformat()})
     return out
 
+
+
+def _build_objective_gravity_proxy_history(spy_rows: list[dict[str, Any]], nominal_yield_rows: list[dict[str, Any]],
+                                           tbill_rows: list[dict[str, Any]], profit_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fallback objective R when Shiller P/D/E workbook is unavailable.
+
+    Uses SPY adjusted close (dividend-adjusted S&P 500 ETF total-return proxy),
+    same-window compounded 3-month T-bill returns, and nominal after-tax corporate
+    profits CPATAX CAGR as a disclosed broad-earnings proxy. This is NOT mislabeled
+    as Shiller EPS: every point carries quality/source metadata.
+    """
+    if len(spy_rows) < 121 or not nominal_yield_rows or not tbill_rows or not profit_rows:
+        return []
+    def latest_le(rows, dt):
+        return next((x for x in reversed(rows) if str(x.get('date',''))[:10] <= dt and _finite(x.get('value')) is not None), None)
+    # Reduce daily adjusted-close data to the last available trading day per month.
+    monthly = {}
+    for row in spy_rows:
+        dt = str(row.get('date',''))[:10]
+        try: date.fromisoformat(dt)
+        except Exception: continue
+        value = _finite(row.get('value'))
+        if value is not None and value > 0:
+            monthly[dt[:7]] = {'date': dt, 'price': value}
+    prices = [monthly[k] for k in sorted(monthly)]
+    if len(prices) < 121: return []
+    profits = sorted([{'date':str(r.get('date',''))[:10], 'value':_finite(r.get('value'))}
+                      for r in profit_rows if _finite(r.get('value')) is not None and _finite(r.get('value')) > 0], key=lambda x:x['date'])
+    out=[]
+    for i, row in enumerate(prices):
+        dt=row['date']; d=date.fromisoformat(dt)
+        prior_candidates=[]
+        for prior in prices[:i]:
+            pd=date.fromisoformat(prior['date']); months=(d.year-pd.year)*12+d.month-pd.month
+            if 118 <= months <= 122: prior_candidates.append((abs(months-120),prior,months))
+        if not prior_candidates: continue
+        _,base,months=min(prior_candidates,key=lambda z:z[0])
+        window=[x for x in prices if base['date'] <= x['date'] <= dt]
+        if len(window)<118: continue
+        # Use dividend-adjusted ETF price; annualized 10Y total return proxy.
+        years=months/12.0
+        equity=((row['price']/base['price'])**(1.0/years)-1.0)*100.0
+        cash_growth=1.0; cash_months=0; valid=True
+        for j in range(1,len(window)):
+            cur=window[j]
+            bill=latest_le(tbill_rows,cur['date'])
+            if not bill or _finite(bill.get('value')) is None:
+                valid=False; break
+            rate=float(bill['value'])
+            if rate <= -100: valid=False; break
+            cash_growth *= (1.0+rate/100.0)**(1.0/12.0); cash_months+=1
+        if not valid or cash_months < 118: continue
+        cash=(cash_growth**(1.0/years)-1.0)*100.0
+        erp=equity-cash
+        target=(d.replace(year=d.year-10) if not (d.month==2 and d.day==29) else d.replace(year=d.year-10,day=28)).isoformat()
+        profit_now=latest_le(profits,dt); profit_base=latest_le(profits,target)
+        if not profit_now or not profit_base or profit_now['value']<=0 or profit_base['value']<=0: continue
+        elapsed=(date.fromisoformat(profit_now['date'])-date.fromisoformat(profit_base['date'])).days/365.2425
+        if elapsed<9.5: continue
+        g=((profit_now['value']/profit_base['value'])**(1.0/elapsed)-1.0)*100.0
+        rf=latest_le(nominal_yield_rows,dt)
+        if not rf: continue
+        rval=float(rf['value'])+erp-g
+        if not all(math.isfinite(v) for v in (equity,cash,erp,g,rval)): continue
+        out.append({'date':dt,'value':round(rval,6) if rval>0 else None,'R_objective':round(rval,6),
+                    'raw_formula_result_pct':round(rval,6),'rf_nominal_pct':float(rf['value']),'rf_date':rf['date'],
+                    'erp_realized_10y_pct':round(erp,6),'equity_total_return_10y_pct':round(equity,6),
+                    'cash_return_10y_pct':round(cash,6),'g_nominal_earnings_10y_pct':round(g,6),
+                    'window_start':base['date'],'window_end':dt,'horizon_years':round(years,3),'basis':'nominal',
+                    'quality':'PROXY_SPY_TOTAL_RETURN_CPATAX_GROWTH','valid_for_gravity':rval>0,
+                    'source':'Yahoo Finance SPY adjusted close + FRED TB3MS + FRED CPATAX + DGS10',
+                    'source_note':'备用口径：SPY复权价格代表含分红总回报；g使用名义企业税后利润CPATAX十年CAGR，不等于Shiller名义EPS增长。',
+                    'available_date_proxy':(d+timedelta(days=120)).isoformat()})
+    return out
 
 def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
     today = date.today().isoformat()
@@ -1339,7 +1414,22 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
     tbill_yield = raw.get("tbill_yield") or {}
     tbill_rows = tbill_yield.get("history") or []
     r_objective_history = _build_objective_gravity_history(cape_rows, nominal_yield_rows, tbill_rows)
-    latest_objective = r_objective_history[-1] if r_objective_history else None
+    objective_method = "SHILLER_EPS_STRICT" if any(_finite(x.get("value")) is not None and float(x["value"]) > 0 for x in r_objective_history) else None
+    if objective_method is None:
+        # Do not leave R客观 blank solely because the Shiller workbook fell back to CAPE-only.
+        # Build a separately labelled realized-return / corporate-profit proxy from public sources.
+        try:
+            spy_rows = _yahoo_history("SPY", start=date(1993, 1, 1), force=bool(raw.get("force", False)))
+            profit_rows = (macro_obs.get("CORPORATE_PROFIT_AFTER_TAX") or {}).get("history") or []
+            proxy_history = _build_objective_gravity_proxy_history(spy_rows, nominal_yield_rows, tbill_rows, profit_rows)
+            if proxy_history:
+                r_objective_history = proxy_history
+                objective_method = "PROXY_SPY_TOTAL_RETURN_CPATAX_GROWTH"
+        except Exception as exc:
+            raw.setdefault("errors", []).append(f"R客观备用历史序列：{str(exc)[:160]}")
+    valid_objective_rows = [x for x in r_objective_history if _finite(x.get("value")) is not None and float(x["value"]) > 0]
+    latest_objective = valid_objective_rows[-1] if valid_objective_rows else None
+    latest_objective_raw = r_objective_history[-1] if r_objective_history else None
     obj_g = latest_objective.get("g_nominal_earnings_10y_pct") if latest_objective else None
     obj_erp = latest_objective.get("erp_realized_10y_pct") if latest_objective else None
     r_obj = latest_objective.get("R_objective") if latest_objective else None
@@ -1379,19 +1469,53 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
     buyer_formula = None
     r_buyer = None
     theta = None
+    buyer_source_mode = "MATCHED_INSTITUTIONAL"
     if erp_buyer is not None and g_buyer is not None and buyer_yield is not None and buyer_fresh:
         r_buyer = buyer_yield + erp_buyer - g_buyer
         buyer_formula = "R_buyer_expected = matched nominal 10Y yield + institutional nominal ERP - forward-looking nominal g"
         if r_obj is not None and abs(r_buyer) >= 0.25:
             theta = r_obj / r_buyer
+    # If the private institutional archive is inaccessible/unmappable, use the official
+    # Philadelphia Fed SPF as a clearly labelled professional-forecaster proxy so the US
+    # Rbuyer multi-decade trend is still available. Never label this as private buy-side data.
+    spf_buyer_history = []
+    if not r_buyer:
+        try:
+            from pro_gravity_countries import _fetch_spf_buyer_history
+            spf_buyer_history = _fetch_spf_buyer_history(force=False)
+            usable_spf = [x for x in spf_buyer_history if _finite(x.get("value")) is not None and _finite(x.get("value")) > 0]
+            if usable_spf:
+                spf_latest = usable_spf[-1]
+                r_buyer = float(spf_latest["value"])
+                erp_buyer = _finite(spf_latest.get("erp_buyer_pct"))
+                g_buyer = _finite(spf_latest.get("g_buyer_pct"))
+                buyer_date = spf_latest.get("date")
+                buyer_basis = "nominal"
+                buyer_horizon = 10.0
+                buyer_source_mode = "SPF_PROFESSIONAL_FORECASTER_PROXY"
+                buyer_formula = "SPF STOCK10 - nominal GDP growth proxy; professional-forecaster consensus, not private fund buy-side"
+                if r_obj is not None and abs(r_buyer) >= 0.25: theta = r_obj / r_buyer
+        except Exception as exc:
+            raw.setdefault("errors", []).append(f"R买方 SPF 备用源：{str(exc)[:150]}")
     matched_buyer_history = _build_point_in_time_gravity_history(
         cape_rows, nominal_yield.get("history") or [], buyer.get("records") or [], date.today(),
         objective_history=r_objective_history)
     r_actual_history = [{"date": x["signal_date"], "value": x["R_actual"],
-                         "source_observation_date": x["buyer_observation_date"]} for x in matched_buyer_history]
+                         "source_observation_date": x["buyer_observation_date"], "quality":"MATCHED_INSTITUTIONAL"} for x in matched_buyer_history]
     theta_history = [{"date": x["signal_date"], "value": x["Theta"],
                       "source_observation_date": x["buyer_observation_date"]}
                      for x in matched_buyer_history if x.get("Theta") is not None]
+    if not r_actual_history and spf_buyer_history:
+        r_actual_history = [{"date":x.get("date"),"value":x.get("value"),"source_observation_date":x.get("date"),
+                             "quality":"SPF_PROFESSIONAL_FORECASTER_PROXY","source":x.get("source"),"note":x.get("note")}
+                            for x in spf_buyer_history if _finite(x.get("value")) is not None and _finite(x.get("value"))>0]
+        # Historical Theta is computed only where a dated objective observation exists.
+        for bp in r_actual_history:
+            obj_candidates=[x for x in r_objective_history if str(x.get("date",""))[:10] <= str(bp.get("date",""))[:10] and _finite(x.get("value")) is not None and float(x["value"])>0]
+            if obj_candidates and abs(float(bp["value"]))>=0.25:
+                obj=obj_candidates[-1]
+                theta_history.append({"date":bp["date"],"value":float(obj["value"])/float(bp["value"]),
+                                      "source_observation_date":bp["date"],"quality":"SPF_PROXY_THETA"})
     alpha_m1_v_history = macro_model.get("numerator_history") or []
     latest_verified_gravity = matched_buyer_history[-1] if matched_buyer_history else None
     latest_verified_age_days = None
@@ -1403,7 +1527,9 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
     r_objective_values = [x["value"] for x in r_objective_history if x.get("value") is not None]
     r_actual_values = [x["value"] for x in r_actual_history if x.get("value") is not None]
     theta_values = [x["value"] for x in theta_history if x.get("value") is not None]
-    if raw.get("buyer") is not None:
+    if buyer_source_mode == "SPF_PROFESSIONAL_FORECASTER_PROXY":
+        buyer_status = "SPF_PROFESSIONAL_FORECASTER_PROXY"
+    elif raw.get("buyer") is not None:
         buyer_status = buyer.get("status", "UNKNOWN")
         if erp_buyer is not None and g_buyer is not None:
             if not buyer_basis_match:
@@ -1440,7 +1566,7 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
         macro_model["A_over_M_formula"] = "(alpha_proxy_fraction * M1_USD_billions * V) / (R_percent/100); R must be positive; output unit USD billions"
     index_meta = INDEXES.get(index, INDEXES["SP500"])
     return {
-        "ok": True, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.57-COUNTRY-THEORY-DATA-QUALITY",
+        "ok": True, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.59-MACRO-RESTORE-IMPORTANT-CALENDAR",
         "as_of": _now_utc(), "requested_index": index, "index_name": index_meta["name"], "index_symbol": index_meta["symbol"],
         "metrics": {
             "buffett_indicator_pct_gdp": round(bvalue, 3) if bvalue is not None else None,
@@ -1473,8 +1599,11 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
             "A_over_M_unit": macro_model.get("A_over_M_unit"), "A_over_M_source_status": macro_model.get("source_status"),
             "erp_objective_pct": round(obj_erp, 4) if obj_erp is not None else None,
             "g_objective_pct": round(obj_g, 4) if obj_g is not None else None,
-            "g_objective_definition": "Shiller 名义每股盈利 E 的过去 10 年 CAGR；与名义 Rf、名义 ERP 同口径，是客观后向增长代理，不是未来增长预测。",
+            "g_objective_definition": ("Shiller 名义每股盈利 E 的过去 10 年 CAGR；与名义 Rf、名义 ERP 同口径，是客观后向增长代理，不是未来增长预测。" if objective_method == "SHILLER_EPS_STRICT" else ("备用口径：FRED CPATAX 名义企业税后利润过去 10 年 CAGR；不是每股盈利 EPS，作为严格 Shiller P/D/E 缺失时的透明代理。" if objective_method == "PROXY_SPY_TOTAL_RETURN_CPATAX_GROWTH" else "缺少可核验的十年名义盈利增长序列。")),
             "R_objective_pct": round(r_obj, 4) if r_obj is not None else None,
+            "R_objective_source_note": ("Shiller P/D/E 严格口径" if objective_method == "SHILLER_EPS_STRICT" else ("SPY复权总回报 + CPATAX名义企业利润增长备用代理；不是EPS口径" if objective_method == "PROXY_SPY_TOTAL_RETURN_CPATX_GROWTH" else "客观R缺少完整历史数据")),
+            "R_objective_method": objective_method,
+            "R_buyer_method": buyer_source_mode,
             "R_objective_percentile": _percentile(r_obj, r_objective_values),
             "R_actual_percentile": _percentile(r_buyer if r_buyer is not None else (latest_verified_gravity.get("R_actual") if latest_verified_gravity else None), r_actual_values),
             "R_buyer_expected_percentile": _percentile(r_buyer if r_buyer is not None else (latest_verified_gravity.get("R_actual") if latest_verified_gravity else None), r_actual_values),
@@ -1494,6 +1623,7 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
             "g_buyer_pct": round(g_buyer, 4) if g_buyer is not None else None,
             "R_actual_pct": round(r_buyer, 4) if r_buyer is not None else None,
             "R_buyer_expected_pct": round(r_buyer, 4) if r_buyer is not None else None,
+            "buyer_source_mode": buyer_source_mode,
             "Theta_actual_over_objective": round(theta, 6) if theta is not None else None,
             "Theta_objective_over_actual": round(theta, 6) if theta is not None else None,
             "buyer_gravity_state": ("NEGATIVE_GRAVITY_CANDIDATE" if r_buyer is not None and r_buyer < 0 else
@@ -1520,6 +1650,7 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
             {"name": "FRED 10-year real Treasury yield DFII10 (reference only)", "url": "https://fred.stlouisfed.org/series/DFII10", "available": y10_real is not None, "last_observation": real_yield.get("date") if real_yield else None},
             {"name": "FRED 10-year nominal Treasury yield DGS10 (R_f input)", "url": "https://fred.stlouisfed.org/series/DGS10", "available": y10_nominal is not None, "last_observation": nominal_yield.get("date") if nominal_yield else None},
             {"name": "FRED 3-month Treasury bill TB3MS (realized cash benchmark for ERP)", "url": "https://fred.stlouisfed.org/series/TB3MS", "available": bool(tbill_rows), "last_observation": tbill_yield.get("date") if tbill_yield else None},
+            {"name": "备用 R客观：SPY复权总回报 + FRED CPATAX名义企业利润增长", "url": "https://finance.yahoo.com/quote/SPY/history/", "available": objective_method == "PROXY_SPY_TOTAL_RETURN_CPATX_GROWTH", "last_observation": latest_objective.get("date") if latest_objective and objective_method == "PROXY_SPY_TOTAL_RETURN_CPATX_GROWTH" else None, "status": "仅当 Shiller P/D/E 严格口径不可用时启用；g为企业税后利润增长，不冒充EPS"},
             {"name": "FRED M1 money stock M1SL", "url": "https://fred.stlouisfed.org/series/M1SL", "available": (macro_obs.get("M1") or {}).get("value") is not None, "last_observation": (macro_obs.get("M1") or {}).get("date")},
             {"name": "FRED M1 velocity M1V", "url": "https://fred.stlouisfed.org/series/M1V", "available": (macro_obs.get("V_M1") or {}).get("value") is not None, "last_observation": (macro_obs.get("V_M1") or {}).get("date")},
             {"name": "FRED GDP deflator GDPDEF", "url": "https://fred.stlouisfed.org/series/GDPDEF", "available": (macro_obs.get("P_GDP_DEFLATOR") or {}).get("value") is not None, "last_observation": (macro_obs.get("P_GDP_DEFLATOR") or {}).get("date")},
@@ -1549,8 +1680,8 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
             "no_manual_inputs": True,
         },
         "status": "READY" if bvalue is not None and cape_latest is not None and r_obj is not None and theta is not None else "PARTIAL_SOURCE_DATA",
-        "double_gravity_status": "READY" if theta is not None else "WAITING_FOR_CURRENT_MATCHED_BUYER_ERP_G",
-        "message": "R客观按名义Rf + 过去十年已实现名义ERP - 名义盈利增长自动计算；R买方只接受同日期、名义口径、约十年期限且可核验的机构ERP/g。缺数据时明确显示缺口，不手填、不冒充。" if theta is None else "双重重力已更新；客观端与买方端均按名义口径及约十年期限匹配。Theta 是两项 R 的比值，不是上涨概率。",
+        "double_gravity_status": "READY" if theta is not None else ("PARTIAL_USING_SPF_PROXY" if r_buyer is not None else "WAITING_FOR_VALID_R_SERIES"),
+        "message": ("R客观使用Shiller严格口径或明确标注的SPY总回报/企业税后利润备用口径；R买方优先机构记录，缺失时用费城联储SPF专业预测者代理，绝不冒充私人买方调查。" if theta is None else "双重重力已更新；R买方来源类型已标注。Theta 是两项 R 的比值，不是上涨概率。"),
     }
 
 
@@ -1566,7 +1697,7 @@ def automatic_dashboard(index: str = "SP500", force: bool = False) -> dict[str, 
         return _metrics_bundle(idx, raw)
     except Exception as exc:
         buyer = _get_buyer_status(start_if_missing=True, force_retry=force)
-        return {"ok": False, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.57-COUNTRY-THEORY-DATA-QUALITY",
+        return {"ok": False, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.59-MACRO-RESTORE-IMPORTANT-CALENDAR",
                 "requested_index": idx, "status": "SOURCE_ERROR", "message": "自动指标源暂不可用，正在保留可追溯的错误信息；不需要也不允许手动填数。",
                 "error": str(exc)[:300], "buyer_source": {k:v for k,v in buyer.items() if k != "records"},
                 "sources": [{"name":"Mendeley institutional expectations", "url": MENDELEY_DATASET_URL}]}
