@@ -616,7 +616,7 @@ body.pro-mode .ael-pro-tab{flex:0 0 auto!important;min-height:42px!important;pad
   <div class="ael-gravity-hero ael-pro-card">
     <div class="ael-gravity-hero-main">
       <div class="ael-macro-eyebrow">AEL PRO · AUTOMATIC DOUBLE GRAVITY</div>
-      <div class="ael-macro-title">双重重力 · 自动估值驾驶舱 V2.6.51</div>
+      <div class="ael-macro-title">双重重力 · 自动估值驾驶舱 V2.6.55</div>
       <div class="ael-macro-lead">完全取消手动填 ERP、g 和无风险利率。系统自动获取联储/FRED、Shiller CAPE、指数历史与机构预期来源；自动显示巴菲特指标、CAPE、R客观、R买方预期重力、Theta、M/V/P/Q、A/M、历史百分位和指定年份后续表现。</div>
       <div class="ael-gravity-toolbar">
         <label>观察指数<select id="gravityAutoIndex" onchange="syncGravityIndex('auto')"><option value="SP500">标普 500</option><option value="NASDAQ">纳斯达克综合指数</option><option value="DOW">道琼斯工业平均指数</option></select></label>
@@ -638,6 +638,28 @@ body.pro-mode .ael-pro-tab{flex:0 0 auto!important;min-height:42px!important;pad
     <div class="ael-gravity-metric"><span id="gravityRActualLabel">R买方预期重力</span><b id="gravityRActual">正在检查机构源</b><small id="gravityRActualMeta">机构 ERP − 前瞻增长率</small><em id="gravityRActualPctl">历史百分位：等待匹配样本</em></div>
     <div class="ael-gravity-metric"><span id="gravityThetaLabel">Theta 重力比</span><b id="gravityTheta">等待匹配</b><small id="gravityThetaMeta">R 客观 / R买方预期重力</small><em id="gravityThetaPctl">历史百分位：等待匹配样本</em></div>
     <div class="ael-gravity-metric"><span>十年期名义无风险利率 Rf</span><b id="gravityRealYield">正在取数</b><small id="gravityRealYieldMeta">FRED DGS10 · 名义收益率</small></div>
+  </div>
+
+  <div class="ael-pro-card" id="gravityCountryTrendCard" style="margin-top:12px">
+    <div class="ael-macro-section-head"><div><div class="ael-pro-section">特许税收公司理论 · 国别双重重力长期趋势</div><div class="ael-macro-hint">默认美国；覆盖 GDP 前八基准经济体并追加俄罗斯、韩国。R客观与 R买方分别绘制长期历史，缺数据就明确显示缺口。非美国市场的客观端采用跨国可得数据代理，不冒充美国严格 EPS 口径；SPF 参考线也不会冒充本国买方预期。</div></div><span id="gravityCountryTrendBadge" class="ael-pro-status-pill wait">等待读取</span></div>
+    <div class="ael-gravity-toolbar" style="margin-top:10px">
+      <label>国家 / 市场<select id="gravityCountrySelect" onchange="loadCountryGravityTrend(false)"><option value="USA" selected>美国（默认）</option><option value="CHN">中国</option><option value="DEU">德国</option><option value="JPN">日本</option><option value="IND">印度</option><option value="GBR">英国</option><option value="FRA">法国</option><option value="ITA">意大利</option><option value="RUS">俄罗斯</option><option value="KOR">韩国</option></select></label>
+      <button class="ael-pro-btn" id="gravityCountryRefreshBtn" onclick="loadCountryGravityTrend(true)">刷新国别历史数据</button>
+    </div>
+    <div id="gravityCountryTrendSummary" class="ael-pro-note" style="margin-top:8px">美国默认；正在读取 R客观与 R买方长期历史数据。</div>
+    <div class="ael-gravity-metrics" style="margin-top:10px">
+      <div class="ael-gravity-metric primary"><span>最近有效 R客观</span><b id="gravityCountryObjectiveLatest">读取中</b><small id="gravityCountryObjectiveCoverage">历史覆盖待查询</small></div>
+      <div class="ael-gravity-metric"><span>最近有效 R买方</span><b id="gravityCountryBuyerLatest">读取中</b><small id="gravityCountryBuyerCoverage">区分机构原始数据与专业预测者代理</small></div>
+      <div class="ael-gravity-metric"><span>R客观有效历史点</span><b id="gravityCountryObjectiveCount">—</b><small>非正结果不会作为有效重力曲线</small></div>
+      <div class="ael-gravity-metric"><span>R买方来源匹配点</span><b id="gravityCountryBuyerCount">—</b><small>区域分组代理不得误读为单一国家调查</small></div>
+    </div>
+    <div id="gravityCountryTrendCharts" class="ael-gravity-history" style="margin-top:10px"><div class="ael-pro-empty">正在读取长期趋势；不会用模拟值补齐。</div></div>
+    <div class="ael-macro-section-head" style="margin-top:14px"><div><div class="ael-pro-section">国别宏观变量与特许税收公司理论数据</div><div class="ael-macro-hint">GDP、实际GDP、GDP平减指数、M1 与 M2 尽可能使用世界银行 WDI / IMF-IFS 本币历史；趋势图以首个有效观测=100标准化，仅比较变化不比较货币规模。M1 仍受各国统计定义影响；α 缺少可比企业实际税负数据时不计算分子。</div></div></div>
+    <div id="gravityCountryMacroSummary" class="ael-pro-note" style="margin-top:8px">读取本国宏观数据源中。</div>
+    <div id="gravityCountryMacroMetrics" class="ael-gravity-metrics" style="margin-top:10px"><div class="ael-pro-empty">宏观变量等待读取。</div></div>
+    <div id="gravityCountryMacroCharts" class="ael-gravity-history" style="margin-top:10px"><div class="ael-pro-empty">正在读取GDP、平减指数与广义货币趋势。</div></div>
+    <details style="margin-top:8px"><summary>查看非正客观公式点与数据质量诊断</summary><div id="gravityCountryInvalidPoints" class="ael-pro-note" style="margin-top:8px">暂无诊断。</div></details>
+    <details style="margin-top:8px"><summary>查看数据源、覆盖年份和定义</summary><div id="gravityCountrySources" class="ael-gravity-sources" style="margin-top:8px">尚未读取。</div><div id="gravityCountryMethod" class="ael-pro-note" style="margin-top:8px">方法说明会随所选国家更新。</div></details>
   </div>
 
   <div class="ael-pro-card" style="margin-top:12px">
@@ -1249,7 +1271,7 @@ function switchProTab(tab){
   document.querySelectorAll(".ael-pro-tabpanel").forEach(x=>x.style.display="none");
   document.querySelectorAll(".ael-pro-tab").forEach(x=>x.classList.toggle("active",x.dataset.proTab===tab));
   const el=document.getElementById("pro-tab-"+tab);if(el)el.style.display="block";
-  if(tab==="gravity")loadGravityAuto(false);
+  if(tab==="gravity"){loadGravityAuto(false);loadCountryGravityTrend(false);}
 }
 function gravityFmt(v,suffix='',d=2){if(v===null||v===undefined||v===''||!Number.isFinite(Number(v)))return '源数据接入中';return Number(v).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})+suffix;}
 function gravityMoneyBillions(v,d=2){if(v===null||v===undefined||v===''||!Number.isFinite(Number(v)))return '源数据接入中';const n=Number(v);if(Math.abs(n)>=1000)return '$'+(n/1000).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})+'T';if(Math.abs(n)>=1)return '$'+n.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})+'B';return '$'+(n*1000).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})+'M';}
@@ -1261,6 +1283,74 @@ function charterDate(s){if(!s)return '未知';const d=new Date(String(s).slice(0
 function charterTrendChart(title,rows,key,unit){const clean=(rows||[]).filter(r=>r[key]!=null&&Number.isFinite(Number(r[key])));if(clean.length<2)return `<div class="ael-gravity-history-block"><b>${title}</b><div class="ael-pro-empty">有效历史点不足</div></div>`;const vals=clean.map(r=>Number(r[key])),min=Math.min(...vals),max=Math.max(...vals),span=max-min||1,w=640,h=150,pad=12;const points=vals.map((v,i)=>`${(pad+i*(w-2*pad)/(vals.length-1)).toFixed(1)},${(h-pad-((v-min)/span)*(h-2*pad)).toFixed(1)}`).join(' ');const dots=clean.filter((r,i)=>i===0||i===clean.length-1||i%Math.max(1,Math.floor(clean.length/24))===0).map(r=>{const i=clean.indexOf(r),x=pad+i*(w-2*pad)/(vals.length-1),y=h-pad-((Number(r[key])-min)/span)*(h-2*pad);return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.4" fill="#e5c66d" tabindex="0" role="button" aria-label="${charterDate(r.date)} ${charterFmt(r[key],unit)}" onclick="showCharterTheoryPoint('${key}','${r.date}',${Number(r[key])},'${unit}')"><title>${charterDate(r.date)} · ${charterFmt(r[key],unit)}</title></circle>`}).join('');return `<div class="ael-gravity-history-block"><div class="ael-gravity-history-head"><b>${title}</b><span>最低 ${charterFmt(min,unit)} · 最高 ${charterFmt(max,unit)}</span></div><svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${title}长期趋势折线图" style="width:100%;height:auto;display:block;margin-top:8px;overflow:visible"><polyline points="${points}" fill="none" stroke="#86b4d0" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>${dots}</svg><div class="ael-gravity-history-axis"><span>${charterDate(clean[0].date)}</span><span>${charterDate(clean[clean.length-1].date)}</span></div><div class="ael-gravity-history-selected" id="charter-selected-${key}">最新值：${charterDate(clean[clean.length-1].date)} · <b>${charterFmt(clean[clean.length-1][key],unit)}</b> · 点击图中节点查看精确值</div></div>`;}
 function showCharterTheoryPoint(key,date,value,unit){const el=document.getElementById('charter-selected-'+key);if(el)el.innerHTML=`${charterDate(date)} · <b>${charterFmt(value,unit)}</b>`;}
 async function loadCharterTheoryHistory(refresh=false){const box=document.getElementById('charterTheoryCharts'),status=document.getElementById('charterTheoryStatus'),btn=document.getElementById('gravityCharterRefresh');if(btn)btn.disabled=true;if(status)status.textContent='正在读取长期季度序列…';try{const r=await fetch(`/api/pro/gravity/charter-theory/history?limit=320&refresh=${refresh?'true':'false'}`);const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.message||d.detail||'长期序列读取失败');const m=d.metrics||{},series=d.series||[];document.getElementById('charterQOverV').textContent=charterFmt(m.Q_over_V_billions,'十亿美元');document.getElementById('charterM2OverP').textContent=charterFmt(m.M2_over_P_billions,'十亿美元');document.getElementById('charterInvP').textContent=charterFmt(m.one_over_P,'倍');document.getElementById('charterQOverMV').textContent=charterFmt(m.Q_over_MV,'倍');document.getElementById('charterQOverVMeta').textContent=`截至 ${charterDate(m.date)} · Q/V`;document.getElementById('charterM2OverPMeta').textContent=`恒等式偏差 ${charterFmt(m.identity_gap_pct,'%')}`;if(status)status.textContent=`${charterDate(d.start_date)} — ${charterDate(d.end_date)} · ${d.count} 个季度 · 已对齐 M₂、V、P、Q`;if(box)box.innerHTML=charterTrendChart('公司整体市值：Q/V',series,'Q_over_V_billions','十亿美元')+charterTrendChart('公司整体市值：M₂/P',series,'M2_over_P_billions','十亿美元')+charterTrendChart('普通股价格：1/P',series,'one_over_P','倍')+charterTrendChart('普通股价格：Q/(M₂V)',series,'Q_over_MV','倍')+charterTrendChart('公司市值恒等式偏差',series,'identity_gap_pct','%');const warn=document.getElementById('charterTheoryWarning');if(warn)warn.textContent=(d.warning||'')+` 当前序列最大市值恒等式偏差 ${charterFmt(d.summary?.max_abs_identity_gap_pct,'%')}；最大股价恒等式偏差 ${charterFmt(d.summary?.max_abs_price_identity_gap_pct,'%')}。注意：V=名义 GDP/M₂，且名义 GDP 与实际 GDP、GDP 平减指数存在国民核算恒等关系，因此两组等式在当前代理构造下具有代数耦合；曲线展示长期尺度变化，不等于独立预测能力已获验证。`; }catch(e){if(status)status.textContent='长期趋势不可用：'+(e.message||e);if(box)box.innerHTML='<div class="ael-pro-empty">没有取得足够的共同历史数据；请检查数据源状态后重试。</div>';document.getElementById('charterTheoryWarning').textContent='没有用模拟数据填充图表。';}finally{if(btn)btn.disabled=false;}}
+let countryGravityRequestSeq = 0;
+function countryGravityPct(v){return v===null||v===undefined||!Number.isFinite(Number(v))?'暂无合格数据':`${Number(v).toFixed(2)}%`;}
+function countryGravityChart(title, rows, slot, caption='', unit='%'){
+ const clean=(rows||[]).filter(r=>r&&r.date&&r.value!==null&&r.value!==undefined&&Number.isFinite(Number(r.value))&&Number(r.value)>0).sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+ if(clean.length<2)return `<div class="ael-gravity-history-block"><div class="ael-gravity-history-head"><b>${esc(title)}</b><span>${clean.length?`只有 ${clean.length} 个有效点`:'当前没有通过口径校验的历史点'}</span></div><div class="ael-pro-note">${esc(caption||'数据未达到绘图条件；不使用模拟值或跨国错配值补齐。')}</div></div>`;
+ const fmt=v=>unit==='%'?countryGravityPct(v):Number(v).toLocaleString('en-US',{maximumFractionDigits:1,minimumFractionDigits:1});
+ const vals=clean.map(r=>Number(r.value)),min=Math.min(...vals),max=Math.max(...vals),span=max-min||1,w=640,h=160,pad=13;
+ const ts=clean.map(r=>Date.parse(String(r.date).slice(0,10)+'T00:00:00Z')),tmin=ts[0],tspan=Math.max(1,ts[ts.length-1]-tmin);
+ const xy=clean.map((r,i)=>({x:pad+((ts[i]-tmin)/tspan)*(w-2*pad),y:h-pad-((Number(r.value)-min)/span)*(h-2*pad),r,i}));
+ const segments=[[]];let gaps=0;for(let i=0;i<xy.length;i++){if(i>0&&ts[i]-ts[i-1]>550*86400000){segments.push([]);gaps++;}segments[segments.length-1].push(xy[i]);}
+ const lines=segments.filter(seg=>seg.length>=2).map(seg=>`<polyline points="${seg.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="#86b4d0" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>`).join('');
+ const step=Math.max(1,Math.floor(clean.length/36));
+ const dots=xy.filter(p=>p.i===0||p.i===clean.length-1||p.i%step===0).map(p=>`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.1" fill="#e5c66d" tabindex="0" role="button" aria-label="${esc(gravityDate(p.r.date))} ${fmt(p.r.value)}" onclick="showCountryGravityPoint('${slot}','${String(p.r.date).slice(0,10)}',${Number(p.r.value)},'${unit}')"><title>${esc(gravityDate(p.r.date))} · ${fmt(p.r.value)}</title></circle>`).join('');
+ const gapNote=gaps?`历史点之间有 ${gaps} 处超过约 18 个月的间隔；折线在缺口处分段，不把缺失期间连成一条线。`:'';
+ return `<div class="ael-gravity-history-block"><div class="ael-gravity-history-head"><b>${esc(title)}</b><span>${clean.length} 点 · 最低 ${fmt(min)} · 最高 ${fmt(max)}</span></div><svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(title)}长期趋势图" style="width:100%;height:auto;display:block;margin-top:8px;overflow:visible">${lines}${dots}</svg><div class="ael-gravity-history-axis"><span>${esc(gravityDate(clean[0].date))}</span><span>${esc(gravityDate(clean[clean.length-1].date))}</span></div><div id="country-gravity-selected-${slot}" class="ael-gravity-history-selected">最新值：${esc(gravityDate(clean[clean.length-1].date))} · <b>${fmt(clean[clean.length-1].value)}</b> · 点击节点查看准确值</div>${caption?`<div class="ael-pro-note">${esc(caption)} ${esc(gapNote)}</div>`:''}</div>`;
+}
+function showCountryGravityPoint(slot, date, value, unit='%'){const el=document.getElementById('country-gravity-selected-'+slot);if(el)el.innerHTML=`${esc(gravityDate(date))} · <b>${unit==='%'?countryGravityPct(value):Number(value).toLocaleString('en-US',{maximumFractionDigits:1,minimumFractionDigits:1})}</b>`;}
+function countryGravitySourceCards(sources){const arr=Array.isArray(sources)?sources:[];if(!arr.length)return '<div class="ael-pro-note">接口未返回可核验的数据源状态。</div>';return arr.map(s=>{const url=gravitySafeLink(s.url||'');const state=s.available?'可读取':'缺失 / 未验证';return `<div class="ael-gravity-source-row"><div><b>${esc(s.name||'数据源')}</b><small>${esc(state)} · ${s.count??0} 条${s.last_observation?` · 最新 ${esc(gravityDate(s.last_observation))}`:''}</small>${s.definition?`<small>${esc(s.definition)}</small>`:''}</div>${url?`<a href="${esc(url)}" target="_blank" rel="noopener">来源 ↗</a>`:''}</div>`;}).join('');}
+function countryMacroIndexRows(rows,key){const valid=(rows||[]).filter(r=>r&&r[key]!==null&&r[key]!==undefined&&Number.isFinite(Number(r[key]))&&Number(r[key])>0);if(!valid.length)return [];const base=Number(valid[0][key]);if(!Number.isFinite(base)||base<=0)return [];return valid.map(r=>({date:r.date,value:Number(r[key])/base*100,raw_value:Number(r[key])}));}
+function countryMacroRaw(v){if(v===null||v===undefined||!Number.isFinite(Number(v)))return '暂无统一口径数据';const n=Number(v);if(Math.abs(n)>=1e12)return (n/1e12).toLocaleString('en-US',{maximumFractionDigits:2})+' 万亿（本币）';if(Math.abs(n)>=1e9)return (n/1e9).toLocaleString('en-US',{maximumFractionDigits:2})+' 十亿（本币）';return n.toLocaleString('en-US',{maximumFractionDigits:2});}
+function renderCountryMacroPanel(panel,countryCode){
+ const summary=document.getElementById('gravityCountryMacroSummary'),metrics=document.getElementById('gravityCountryMacroMetrics'),charts=document.getElementById('gravityCountryMacroCharts');if(!summary||!metrics||!charts)return;
+ const mp=panel||{},rows=mp.history||[],latest=mp.latest||{},fields=mp.fields||{};
+ const isUS=countryCode==='USA';
+ const specs=[['nominal_gdp_lcu','名义GDP','名义产出规模'],['real_gdp_lcu','实际GDP','剔除价格变化后的产出'],['gdp_deflator_index','GDP平减指数','总体价格水平'],['m2_broad_lcu','M2 / 广义货币','独立展示，不冒充M1'],['v_m2_proxy','名义GDP / M2','广义货币速度代理'],['alpha_proxy','α代理','企业税后利润/名义GDP'],['M1','M1货币存量','必须为本国真实M1序列'],['V_M1','M1流通速度','必须有本国M1及速度定义'],['alpha_M1_V','α × M1 × V','关键变量齐备后才计算']];
+ const rawMeta={nominal_gdp_lcu:latest.nominal_gdp_lcu,real_gdp_lcu:latest.real_gdp_lcu,gdp_deflator_index:latest.gdp_deflator_index,m2_broad_lcu:latest.m2_broad_lcu,v_m2_proxy:latest.v_m2_proxy,alpha_proxy:latest.alpha_proxy,M1:latest.M1,V_M1:latest.V_M1,alpha_M1_V:latest.alpha_M1_V};
+ metrics.innerHTML=specs.map(([key,label,desc])=>{let item=fields[key]||{},val=rawMeta[key];if((val===null||val===undefined)&&item.value!==null&&item.value!==undefined)val=item.value;if(key==='alpha_proxy'&&val!=null)val=Number(val)*100;const ok=item.available===true||(val!==null&&val!==undefined&&Number.isFinite(Number(val)));let value=key==='alpha_proxy'&&val!=null?Number(val).toFixed(2)+'%':key==='gdp_deflator_index'&&val!=null?countryMacroRaw(val):countryMacroRaw(val);return `<div class="ael-gravity-metric ${ok?'':'primary'}"><span>${esc(label)}</span><b>${esc(ok?value:'暂无同口径数据')}</b><small>${esc(ok?(item.date?`截至 ${gravityDate(item.date)}`:desc):(item.reason||desc+'；缺失时不以其他变量替代。'))}</small></div>`;}).join('');
+ const n=rows.length,first=rows.find(r=>r.nominal_gdp_lcu!=null),last=rows.slice().reverse().find(r=>r.nominal_gdp_lcu!=null);
+ summary.textContent=`${isUS?'美国：现有 FRED 季度变量 + World Bank 年度跨国对照。':'本国：World Bank WDI 年度本币历史。'} 频率 ${mp.frequency||'未知'}；共同/可用历史 ${n} 点${first&&last?`，名义 GDP 覆盖 ${gravityDate(first.date)} — ${gravityDate(last.date)}`:''}。${mp.warning||''}`;
+ const normalized=[['名义 GDP 趋势指数（首个观测=100）','nominal_gdp_lcu','nominal-gdp'],['实际 GDP 趋势指数（首个观测=100）','real_gdp_lcu','real-gdp'],['GDP平减指数趋势（首个观测=100）','gdp_deflator_index','deflator'],['M1 / 窄口径货币趋势（首个观测=100）','M1','m1'],['GDP / M1 速度代理趋势（首个观测=100）','V_M1','v-m1'],['M2 / 广义货币趋势（首个观测=100）','m2_broad_lcu','m2'],['名义GDP / M2 趋势（首个观测=100）','v_m2_proxy','v-m2']];
+ let html=normalized.map(([title,key,slot])=>countryGravityChart(title,countryMacroIndexRows(rows,key),slot,'按该序列首个有效观测标准化为100；只比较本身时间变化，不比较各国本币规模。','index')).join('');
+ if(isUS){const numerator=rows.filter(r=>r.alpha_M1_V!=null&&Number(r.alpha_M1_V)>0);html+=countryGravityChart('美国 α × M1 × V 分子趋势指数（首个观测=100）',countryMacroIndexRows(numerator,'alpha_M1_V'),'alpha-m1-v','来自现有 FRED CPATAX/GDP、M1SL、M1V 的可核验共同日期；α是公开数据操作性代理。','index');}
+ charts.innerHTML=html||'<div class="ael-pro-empty">没有足够宏观历史数据绘图；不填充虚构数据。</div>';
+}
+async function loadCountryGravityTrend(refresh=false){
+ const select=document.getElementById('gravityCountrySelect'),badge=document.getElementById('gravityCountryTrendBadge'),btn=document.getElementById('gravityCountryRefreshBtn'),summary=document.getElementById('gravityCountryTrendSummary'),charts=document.getElementById('gravityCountryTrendCharts');
+ if(!select||!charts)return;
+ const seq=++countryGravityRequestSeq,code=select.value||'USA';
+ if(btn)btn.disabled=true;if(badge){badge.className='ael-pro-status-pill wait';badge.textContent='读取长期历史中';}if(summary)summary.textContent=`正在读取 ${select.options[select.selectedIndex]?.text||code} 的名义 R 历史数据；首次请求会自动下载公开源。`;
+ try{
+  const r=await fetch(`/api/pro/gravity/countries/history?country=${encodeURIComponent(code)}&limit=1200&refresh=${refresh?'true':'false'}`,{cache:'no-store'});
+  const d=await r.json();if(seq!==countryGravityRequestSeq)return;if(!r.ok||!d.ok)throw new Error(d.message||d.detail||d.error||'长期历史数据读取失败');
+  const obj=(d.R_objective||[]).filter(x=>x&&x.value!=null&&Number(x.value)>0),buyer=(d.R_buyer||[]).filter(x=>x&&x.value!=null&&Number(x.value)>0),ref=(d.R_buyer_reference||[]).filter(x=>x&&x.value!=null&&Number(x.value)>0);
+  const isUS=code==='USA';const usingSPF=isUS&&buyer.length===0&&ref.length>0;const shownBuyer=usingSPF?ref:buyer;
+  const objLast=obj[obj.length-1],buyerLast=shownBuyer[shownBuyer.length-1];
+  const objCov=obj.length?`${gravityDate(obj[0].date)} — ${gravityDate(obj[obj.length-1].date)}`:'暂无合格历史覆盖';
+  const buyCov=shownBuyer.length?`${gravityDate(shownBuyer[0].date)} — ${gravityDate(shownBuyer[shownBuyer.length-1].date)}`:'暂无合格买方预期覆盖';
+  const latestObj=document.getElementById('gravityCountryObjectiveLatest'),latestBuy=document.getElementById('gravityCountryBuyerLatest');if(latestObj)latestObj.textContent=objLast?countryGravityPct(objLast.value):'暂无合格数据';if(latestBuy)latestBuy.textContent=buyerLast?countryGravityPct(buyerLast.value):'暂无合格数据';
+  const oc=document.getElementById('gravityCountryObjectiveCount'),bc=document.getElementById('gravityCountryBuyerCount');if(oc)oc.textContent=String(obj.length);if(bc)bc.textContent=String(buyer.length);
+  const oCover=document.getElementById('gravityCountryObjectiveCoverage'),bCover=document.getElementById('gravityCountryBuyerCoverage');if(oCover)oCover.textContent=objCov;if(bCover)bCover.textContent=usingSPF?'SPF 专业预测者代理，并非私人基金买方调查':buyCov;
+  if(badge){badge.className='ael-pro-status-pill '+(obj.length?'ok':'wait');badge.textContent=obj.length?'历史已加载':'部分数据 / 需诊断';}
+  const name=d.name||code;let line=`${name} · 客观历史 ${obj.length} 点（${objCov}） · ${d.buyer_scope_label||'本国/区域来源'}匹配 ${buyer.length} 点（${buyCov}）。`;
+  if(usingSPF)line+=` 当前第二条曲线使用美国费城联储 SPF 专业预测者代理（${buyCov}），不代表机构私募买方，也不代表 ${name} 本国预期。`;
+  else if(!buyer.length)line+=` 本国/可匹配区域买方序列缺失。${d.buyer_note||d.buyer_reference_note||''}`;
+  if(summary)summary.textContent=line;
+  let html=countryGravityChart('R客观预期重力 · 数十年历史',obj,'objective',d.objective_label||d.method_note||'不合格/非正公式结果不画成有效重力值。');
+  if(buyer.length)html+=countryGravityChart('R买方预期重力 · '+(d.buyer_scope_label||'可匹配来源'),buyer,'buyer',d.buyer_note||'同日期、约10年期限、名义 ERP/g 与名义 Rf 匹配。');
+  else if(usingSPF)html+=countryGravityChart('R买方长期参考趋势 · 费城联储 SPF 专业预测者代理',ref,'buyer',d.buyer_reference_note||'非私人基金机构调查；g 使用名义 GDP 增长代理，不是公司 EPS 增长。');
+  else html+=countryGravityChart('R买方预期重力 · '+(d.buyer_scope_label||'本国合格序列'),buyer,'buyer',d.buyer_note||'缺少合格的国家/区域 ERP 与前瞻 g 数据，不补造。');
+  if(!isUS&&ref.length)html+=countryGravityChart('美国 SPF 参考线（不代表本国 R买方）',ref,'spf-reference',d.buyer_reference_note||'仅用于对照美国专业预测者预期。');
+  charts.innerHTML=html;
+  const bad=document.getElementById('gravityCountryInvalidPoints'),badRows=d.invalid_objective||[];if(bad)bad.innerHTML=badRows.length?`<div>共 ${badRows.length} 个原始公式结果未通过适用域校验。以下展示最近 ${Math.min(8,badRows.length)} 个；数值保留作诊断，但不并入 R客观曲线。</div><div class="ael-gravity-history-table-wrap"><table><thead><tr><th>日期</th><th>原始 R</th><th>名义 Rf</th><th>ERP 代理</th><th>g 代理</th><th>原因</th></tr></thead><tbody>${badRows.slice(-8).reverse().map(x=>`<tr><td>${esc(gravityDate(x.date))}</td><td>${countryGravityPct(x.raw_formula_result_pct)}</td><td>${countryGravityPct(x.Rf_nominal_pct)}</td><td>${countryGravityPct(x.ERP_proxy_pct)}</td><td>${countryGravityPct(x.g_nominal_GDP_proxy_pct)}</td><td>${esc(x.reason||'未通过适用域校验')}</td></tr>`).join('')}</tbody></table></div>`:'没有返回非正值诊断点；这不代表模型已获预测能力验证。';
+  const src=document.getElementById('gravityCountrySources');if(src)src.innerHTML=countryGravitySourceCards(d.sources);
+  const method=document.getElementById('gravityCountryMethod');if(method)method.textContent=(d.method_note||'')+' '+(d.buyer_scope_note||'')+' 数据历史可能后续修订，不能自动视为点时无前视偏差的回测序列。';
+  renderCountryMacroPanel(d.macro_panel,code);
+ }catch(e){if(seq!==countryGravityRequestSeq)return;if(badge){badge.className='ael-pro-status-pill wait';badge.textContent='数据读取失败';}if(summary)summary.textContent='国别长期历史读取失败：'+(e.message||e);if(charts)charts.innerHTML='<div class="ael-pro-empty">没有用模拟数据填充；请展开数据源诊断或手动刷新后重试。</div>';renderCountryMacroPanel({history:[],fields:{},warning:'接口或网络错误，宏观变量暂不可用。'},code);const src=document.getElementById('gravityCountrySources');if(src)src.innerHTML=`<div class="ael-pro-note">${esc(e.message||String(e))}</div>`;
+ }finally{if(seq===countryGravityRequestSeq&&btn)btn.disabled=false;}
+}
 function gravityAMTrendChart(title,rows,key){
  const clean=(rows||[]).filter(r=>r&&r.date&&r[key]!=null&&Number.isFinite(Number(r[key])));
  if(clean.length<2)return `<div class="ael-gravity-history-block"><div class="ael-gravity-history-head"><b>${esc(title)}</b><span>${clean.length?`仅 ${clean.length} 个有效点`:'暂无通过校验的历史数据'}</span></div><div class="ael-pro-empty">有效历史点不足，暂不绘制趋势；没有用模拟值补齐。</div></div>`;
@@ -1278,10 +1368,27 @@ function renderGravityAMHistory(series){
  const status=document.createElement('div');status.className='ael-pro-note';status.style.marginTop='8px';status.textContent=`分子历史共 ${n.length} 个季度。计算采用同一观测期的税后企业利润/名义 GDP 作为 α 代理，并乘 FRED M1SL 与 M1V；只匹配观测日期不晚于该季度的数值；FRED 历史值可能经过后续修订，因此它适合展示长期趋势，不等同于实时版本回测。该曲线不依赖 R，所以 R 缺失也可以展示。完整 A/M 的历史曲线等 R客观按“过去十年已实现名义 ERP 与名义盈利增长”完成后再匹配，避免用错误分母伪造历史。金额自动由十亿美元换算成 T。`;box.appendChild(status);
 }
 
-async function loadGravityAuto(refresh=false){
+let gravityBuyerPollAttempts = 0;
+let gravityBuyerPollTimer = null;
+const GRAVITY_BUYER_POLL_INTERVAL_MS = 5000;
+const GRAVITY_BUYER_POLL_MAX_ATTEMPTS = 36;
+function scheduleGravityBuyerStatusPoll(){
+ if(gravityBuyerPollTimer)clearTimeout(gravityBuyerPollTimer);
+ if(gravityBuyerPollAttempts >= GRAVITY_BUYER_POLL_MAX_ATTEMPTS){
+   const note=document.getElementById('gravityBuyerStatusNote');
+   if(note)note.textContent += ' 已等待约 3 分钟仍未返回终态；自动轮询已暂停。请检查服务器日志或点击“自动刷新全部数据”重新查询。';
+   const status=document.getElementById('gravityBuyerStatus');if(status)status.textContent='状态超时待核验';
+   return;
+ }
+ gravityBuyerPollAttempts += 1;
+ gravityBuyerPollTimer=setTimeout(()=>{gravityBuyerPollTimer=null;loadGravityAuto(false,true);},GRAVITY_BUYER_POLL_INTERVAL_MS);
+}
+async function loadGravityAuto(refresh=false, autoPoll=false){
+ if(!autoPoll && gravityBuyerPollTimer){clearTimeout(gravityBuyerPollTimer);gravityBuyerPollTimer=null;}
+ if(!autoPoll)gravityBuyerPollAttempts=0;
  if(!window.__charterTheoryLoaded){window.__charterTheoryLoaded=true;loadCharterTheoryHistory(false);}
  const idx=document.getElementById('gravityAutoIndex')?.value||'SP500';const btn=document.getElementById('gravityAutoRefreshBtn'),badge=document.getElementById('gravityAutoBadge');
- if(btn){btn.disabled=true;btn.textContent='正在自动取数…';}if(badge)badge.textContent='数据读取中';
+ if(btn&&!autoPoll){btn.disabled=true;btn.textContent='正在自动取数…';}if(badge)badge.textContent=autoPoll?'复查机构数据状态…':'数据读取中';
  const loadingIds=['gravityBuffettValue','gravityCapeValue','gravityRObjective','gravityRActual','gravityTheta','gravityRealYield'];loadingIds.forEach(id=>{const el=document.getElementById(id);if(el&&(!el.textContent||el.textContent.includes('源数据')||el.textContent.includes('正在')))el.textContent='正在读取';});
  try{
   const r=await fetch(`/api/pro/gravity/automatic?index=${encodeURIComponent(idx)}&refresh=${refresh?'true':'false'}`);const d=await r.json();if(!r.ok)throw new Error(d.detail||d.error||'自动指标读取失败');
@@ -1294,9 +1401,10 @@ async function loadGravityAuto(refresh=false){
   document.getElementById('gravityCapeValue').textContent=m.cape==null?'取数失败':gravityFmt(m.cape,'x',2);
   document.getElementById('gravityCapeMeta').textContent=m.cape_observation_date?`官方月度数据 · ${gravityDate(m.cape_observation_date)}`:'Shiller 官方月度数据';
   document.getElementById('gravityCapePctl').textContent=m.cape_percentile==null?'历史百分位不可算':`历史百分位 ${gravityFmt(m.cape_percentile,'%',1)}`;
-  document.getElementById('gravityRObjective').textContent=m.R_objective_pct==null?'客观链待补齐':gravityFmt(m.R_objective_pct,'%');
-  document.getElementById('gravityRObjectiveMeta').textContent=`ERP* ${m.erp_objective_pct==null?'—':gravityFmt(m.erp_objective_pct,'%')} · g* ${m.g_objective_pct==null?'—':gravityFmt(m.g_objective_pct,'%')}`;
-  document.getElementById('gravityRObjectivePctl').textContent=m.R_objective_percentile==null?`历史百分位不可算 · ${Number(m.R_objective_history_count||0)} 个点`:`历史百分位 ${gravityFmt(m.R_objective_percentile,'%',1)} · ${Number(m.R_objective_history_count||0)} 个点`;
+  const rawObjectiveR=m.R_objective_pct==null?null:Number(m.R_objective_pct),objectiveRInDomain=rawObjectiveR!==null&&Number.isFinite(rawObjectiveR)&&rawObjectiveR>0;
+  document.getElementById('gravityRObjective').textContent=m.R_objective_pct==null?'客观链待补齐':(objectiveRInDomain?gravityFmt(rawObjectiveR,'%'):'非正公式结果待诊断');
+  document.getElementById('gravityRObjectiveMeta').textContent=`ERP* ${m.erp_objective_pct==null?'—':gravityFmt(m.erp_objective_pct,'%')} · g* ${m.g_objective_pct==null?'—':gravityFmt(m.g_objective_pct,'%')}`+(rawObjectiveR!==null&&!objectiveRInDomain?` · 原始公式结果 ${gravityFmt(rawObjectiveR,'%')}，不作为有效重力显示`:'');
+  document.getElementById('gravityRObjectivePctl').textContent=!objectiveRInDomain?`有效历史百分位不可用/该点已排除 · ${Number(m.R_objective_history_count||0)} 个源历史点`:(m.R_objective_percentile==null?`历史百分位不可算 · ${Number(m.R_objective_history_count||0)} 个点`:`历史百分位 ${gravityFmt(m.R_objective_percentile,'%',1)} · ${Number(m.R_objective_history_count||0)} 个点`);
   const rActualLabel=document.getElementById('gravityRActualLabel');
   if(m.R_actual_pct!=null){document.getElementById('gravityRActual').textContent=gravityFmt(m.R_actual_pct,'%');if(rActualLabel)rActualLabel.textContent='R买方预期重力（当前匹配）';document.getElementById('gravityRActualMeta').textContent=`ERPB ${m.erp_buyer_pct==null?'未识别':gravityFmt(m.erp_buyer_pct,'%')} · gB ${m.g_buyer_pct==null?'未识别':gravityFmt(m.g_buyer_pct,'%')} · ${m.buyer_source_as_of?gravityDate(m.buyer_source_as_of):'来源日期待核验'} · ${m.buyer_horizon_years==null?'期限待核验':gravityFmt(m.buyer_horizon_years,'年',1)}`;}
   else if(m.latest_verified_R_actual_pct!=null){document.getElementById('gravityRActual').textContent=gravityFmt(m.latest_verified_R_actual_pct,'%')+'（历史）';if(rActualLabel)rActualLabel.textContent='R买方预期重力（最近可验证历史）';document.getElementById('gravityRActualMeta').textContent=`观测 ${m.latest_verified_history_date?gravityDate(m.latest_verified_history_date):'日期待核验'} · 已过 ${m.latest_verified_history_age_days==null?'未知':m.latest_verified_history_age_days+' 天'} · ${m.latest_verified_institution_count||0} 家机构 · 不代表当前 R`;}
@@ -1328,23 +1436,38 @@ async function loadGravityAuto(refresh=false){
   const amb=document.getElementById('gravityAMBuyerValue');if(amb)amb.textContent=m.A_over_M_buyer_billions==null?'等待合格 R买方预期':`${gravityMoneyBillions(m.A_over_M_buyer_billions,2)}（模型隐含市值代理）`;
   const ambMeta=document.getElementById('gravityAMBuyerMeta');if(ambMeta)ambMeta.textContent=m.A_over_M_buyer_billions==null?'当前买方端未通过 ERP/g、期限/时点与新鲜度核验':'α代理 × M1 × V / R买方预期重力';
   const formulaNote=document.getElementById('gravityMacroFormulaNote');if(formulaNote)formulaNote.textContent='公式：[A/M] = (α × M1 × V) / Ry*。分子历史独立展示；完整 A/M 历史必须与按过去十年实际 ERP、实际 g 定义的 R客观逐期匹配。α 当前以 CPATAX/名义 GDP 作为公开数据代理：'+(m.alpha_proxy_definition||'暂缺理论 α 的直接观测')+'。';
-  const bStatus=d.buyer_source||{};document.getElementById('gravityBuyerStatus').textContent=({'DOWNLOADING':'自动下载中','USABLE_ERP_AND_G':'ERP/g 已匹配','ERP_ONLY_G_MISSING':'ERP 已取到，g 不合格','ERP_G_BASIS_OR_SOURCE_MISSING':'ERP/g 口径不匹配','STALE_SOURCE':'机构预期过旧','SOURCE_DATE_MISMATCH':'机构日期不匹配','STALE_SOURCE_OR_DATE_MISMATCH':'机构日期过旧/不匹配','RETURN_BASIS_UNKNOWN':'回报口径未知','RETURN_BASIS_MISMATCH':'实际/名义口径不一致','HORIZON_MISMATCH':'期限不匹配（需要约 10 年）','RISK_FREE_YIELD_UNAVAILABLE':'对应日期的无风险利率缺失','SOURCE_DOWNLOADED_BUT_FIELDS_UNMAPPED':'已下载，字段需审验','DOWNLOAD_FAILED':'下载受阻','NOT_STARTED':'等待自动同步'}[m.buyer_source_status]||m.buyer_source_status||'检查中');
-  const buyerGateNote=({'STALE_SOURCE':'当前源已超过 180 天；仅展示带日期的最近历史配对值，不作为当前 R。','SOURCE_DATE_MISMATCH':'机构观察日与 Shiller CAPE 相差超过 45 天；当前 Theta 已阻断。','RETURN_BASIS_MISMATCH':'机构 ERP/g 不是同为名义回报口径；不与客观 R 混算。','HORIZON_MISMATCH':'机构预测期限与约 10 年客观口径不一致；当前 Theta 已阻断。','RISK_FREE_YIELD_UNAVAILABLE':'缺少买方观察日之前可用的名义利率；当前 R 已阻断。','ERP_G_BASIS_OR_SOURCE_MISSING':'原始机构来源缺少可验证的同口径 ERP 与前瞻 g。'}[m.buyer_source_status]||'数据由服务端自动获取；不需要手动输入。');
-  document.getElementById('gravityBuyerStatusNote').textContent=buyerGateNote+' '+(bStatus.message||'');
+  const bStatus=d.buyer_source||{};const buyerStatusText=({'DOWNLOADING':'自动下载中','USABLE_ERP_AND_G':'ERP/g 已匹配','ERP_ONLY_G_MISSING':'ERP 已取到，g 不合格','ERP_G_BASIS_OR_SOURCE_MISSING':'ERP/g 口径不匹配','STALE_SOURCE':'机构预期过旧','SOURCE_DATE_MISMATCH':'机构日期不匹配','STALE_SOURCE_OR_DATE_MISMATCH':'机构日期过旧/不匹配','RETURN_BASIS_UNKNOWN':'回报口径未知','RETURN_BASIS_MISMATCH':'实际/名义口径不一致','HORIZON_MISMATCH':'期限不匹配（需要约 10 年）','RISK_FREE_YIELD_UNAVAILABLE':'对应日期的无风险利率缺失','SOURCE_DOWNLOADED_BUT_FIELDS_UNMAPPED':'已下载，字段需审验','DOWNLOAD_FAILED':'下载失败','NOT_STARTED':'等待自动同步'}[m.buyer_source_status]||m.buyer_source_status||'检查中');
+  document.getElementById('gravityBuyerStatus').textContent=buyerStatusText;
+  const buyerGateNote=({'STALE_SOURCE':'当前源已超过 180 天；仅展示带日期的最近历史配对值，不作为当前 R。','SOURCE_DATE_MISMATCH':'机构观察日与 Shiller CAPE 相差超过 45 天；当前 Theta 已阻断。','RETURN_BASIS_MISMATCH':'机构 ERP/g 不是同为名义回报口径；不与客观 R 混算。','HORIZON_MISMATCH':'机构预测期限与约 10 年客观口径不一致；当前 Theta 已阻断。','RISK_FREE_YIELD_UNAVAILABLE':'缺少买方观察日之前可用的名义利率；当前 R 已阻断。','ERP_G_BASIS_OR_SOURCE_MISSING':'原始机构来源缺少可验证的同口径 ERP 与前瞻 g。','SOURCE_DOWNLOADED_BUT_FIELDS_UNMAPPED':'原始包已下载，但表格字段没有映射出可用的 ERP/g；未用代理值冒充。','DOWNLOAD_FAILED':'原始机构数据包下载失败；下方显示具体错误，不会伪造数据。'}[m.buyer_source_status]||'数据由服务端自动获取；不需要手动输入。');
+  const bs=bStatus.summary||{};const diagnostics=[];
+  if(bs.source_file_count!=null)diagnostics.push(`检查文件 ${bs.source_file_count} 个`);
+  if(bStatus.usable_row_count!=null)diagnostics.push(`可识别 ERP 记录 ${bStatus.usable_row_count} 条`);
+  if(bs.row_count!=null)diagnostics.push(`同日/同期限/同口径匹配 ${bs.row_count} 条`);
+  if(bs.institution_count!=null)diagnostics.push(`机构 ${bs.institution_count} 家`);
+  if(Array.isArray(bStatus.skipped_files)&&bStatus.skipped_files.length)diagnostics.push(`跳过文件 ${bStatus.skipped_files.length} 个`);
+  if(bStatus.retry_after_seconds!=null)diagnostics.push(`自动重试冷却 ${bStatus.retry_after_seconds} 秒；手动刷新可立即重试`);
+  document.getElementById('gravityBuyerStatusNote').textContent=buyerGateNote+' '+(bStatus.message||'')+(diagnostics.length?' 数据诊断：'+diagnostics.join(' · ')+'。':'');
+  if(m.buyer_source_status==='DOWNLOADING'){
+    const note=document.getElementById('gravityBuyerStatusNote');if(note)note.textContent+=' 页面会每 5 秒自动复查一次；如果约 3 分钟仍无终态，会提示检查服务器日志。';
+  }else{
+    gravityBuyerPollAttempts=0;if(gravityBuyerPollTimer){clearTimeout(gravityBuyerPollTimer);gravityBuyerPollTimer=null;}
+  }
   const breakdown=[['观测指数',d.index_name||idx],['巴菲特指标口径',(m.buffett_definition||'世界银行上市公司市值/GDP年度指标；非日频估值')],['CAPE口径',m.cape_scope||'Shiller官方CAPE'],['十年期名义无风险利率 Rf',m.risk_free_nominal_10y_pct==null?'源数据接入中':gravityFmt(m.risk_free_nominal_10y_pct,'%')],['客观增长 g*',m.g_objective_pct==null?'名义盈利增长历史序列缺失':gravityFmt(m.g_objective_pct,'%')],['买方数据日期',m.buyer_source_as_of?gravityDate(m.buyer_source_as_of):'自动机构源尚未形成合格ERP/g'],['Theta 状态',m.Theta_actual_over_objective==null?'不输出不合格比值':'已匹配计算']];
   document.getElementById('gravityAutoBreakdown').innerHTML=breakdown.map(([a,b])=>`<div class="ael-gravity-breakdown-row"><span>${esc(a)}</span><b>${esc(b)}</b></div>`).join('');
   const sources=d.sources||[];document.getElementById('gravityAutoSources').innerHTML=sources.map(x=>`<div class="ael-gravity-source-row"><div class="ael-gravity-source-head"><b>${esc(x.name||'数据源')}</b><span class="ael-pro-status-pill ${x.available?'ok':'wait'}">${x.available?'可用':'未就绪'}</span></div><small>最后观测：${esc(x.last_observation?gravityDate(x.last_observation):'尚未读取')}</small>${gravitySafeLink(x.url)?`<a href="${esc(gravitySafeLink(x.url))}" target="_blank" rel="noopener">查看来源 ↗</a>`:''}</div>`).join('')||'<div class="ael-pro-empty">暂无来源信息。</div>';
   if(Array.isArray(d.errors)&&d.errors.length){document.getElementById('gravityAutoSources').insertAdjacentHTML('beforeend',`<div class="ael-pro-note" style="margin-top:6px">异常：${d.errors.map(esc).join('；')}</div>`);}
   await loadGravityAutoHistory(idx);
- }catch(e){if(badge)badge.textContent='自动取数失败';const src=document.getElementById('gravityAutoSources');if(src)src.innerHTML=`<div class="ael-pro-empty">自动取数请求失败：${esc(e.message||e)}。请稍后自动重试，不需要填任何输入框。</div>`;}
- finally{if(btn){btn.disabled=false;btn.textContent='自动刷新全部数据';}}
+  if(m.buyer_source_status==='DOWNLOADING')scheduleGravityBuyerStatusPoll();
+ }catch(e){if(badge)badge.textContent='自动取数失败';const src=document.getElementById('gravityAutoSources');if(src)src.innerHTML=`<div class="ael-pro-empty">自动取数请求失败：${esc(e.message||e)}。请稍后自动重试，不需要填任何输入框。</div>`;if(autoPoll)scheduleGravityBuyerStatusPoll();}
+ finally{if(btn&&!autoPoll){btn.disabled=false;btn.textContent='自动刷新全部数据';}}
 }
 async function loadGravityAutoHistory(index){
  const box=document.getElementById('gravityPercentileHistory'),badge=document.getElementById('gravityHistoryBadge');if(box)box.innerHTML='<div class="ael-pro-empty">读取历史序列…</div>';
  try{const r=await fetch(`/api/pro/gravity/automatic/history?index=${encodeURIComponent(index)}&limit=120`);const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.detail||d.error||'读取历史失败');
   if(badge)badge.textContent=`CAPE ${Number(d.count_cape||0)} 月 · Buffett ${Number(d.count_buffett||0)} 季 · Theta ${Number(d.count_theta||0)} 匹配点`;
   const build=(name,rows,unit)=>{const clean=(rows||[]).filter(x=>x.value!=null&&Number.isFinite(Number(x.value)));if(!clean.length)return `<div class="ael-gravity-history-block"><div class="ael-gravity-history-head"><b>${name}</b><span>暂无通过口径校验的数据</span></div><div class="ael-pro-note">本序列未通过来源/口径校验或暂时取数失败。不会用空值、旧值或代理数据补齐。</div></div>`;const vals=clean.map(x=>Number(x.value));const min=Math.min(...vals),max=Math.max(...vals),span=max-min||1;const plot=clean.slice(-60);const bars=plot.map((x,i)=>`<button type="button" class="ael-gravity-history-bar" aria-label="${esc(name)} ${esc(gravityDate(x.date))} ${gravityFmt(x.value,unit)}" data-name="${esc(name)}" data-date="${esc(x.date)}" data-value="${Number(x.value)}" data-unit="${esc(unit)}" title="点击查看 ${esc(gravityDate(x.date))} 的准确值" onclick="showGravityHistoryPoint(this)" style="height:${Math.max(4,((Number(x.value)-min)/span)*64)}px"></button>`).join('');const tableRows=clean.slice(-12).reverse().map(x=>`<tr><td>${esc(gravityDate(x.date))}</td><td>${gravityFmt(x.value,unit,unit==='x'?2:2)}</td></tr>`).join('');return `<div class="ael-gravity-history-block"><div class="ael-gravity-history-head"><b>${name}</b><span>最低 ${gravityFmt(min,unit)} · 最高 ${gravityFmt(max,unit)}</span></div><div class="ael-gravity-history-bars" role="group" aria-label="${esc(name)}历史数据，点击柱形查看具体数值">${bars}</div><div class="ael-gravity-history-axis"><span>${esc(gravityDate(plot[0].date))}</span><span>${esc(gravityDate(plot[plot.length-1].date))}</span></div><div class="ael-gravity-history-selected" aria-live="polite">最新值：${esc(gravityDate(clean[clean.length-1].date))} · <b>${gravityFmt(clean[clean.length-1].value,unit)}</b> · 点击任一柱形查看精确值</div><details class="ael-gravity-history-details"><summary>查看最近 12 个具体数值</summary><div class="ael-gravity-history-table-wrap"><table><thead><tr><th>日期</th><th>数值</th></tr></thead><tbody>${tableRows}</tbody></table></div></details></div>`;};
-  if(box)box.innerHTML=build('巴菲特指标（季度历史）',d.buffett,'%')+build('Shiller CAPE（月度历史）',d.cape,'x')+build('R客观预期重力（待接入实际ERP/g）',d.R_objective,'%')+build('R买方预期重力（机构预期 ERP/g）',d.R_actual,'%')+build('Theta（同口径历史重力比）',d.theta,'x');
+  const validObjectiveHistory=(d.R_objective||[]).filter(x=>x&&x.value!=null&&Number.isFinite(Number(x.value))&&Number(x.value)>0);
+  if(box)box.innerHTML=build('巴菲特指标（季度历史）',d.buffett,'%')+build('Shiller CAPE（月度历史）',d.cape,'x')+build('R客观预期重力（合格正值历史）',validObjectiveHistory,'%')+build('R买方预期重力（机构预期 ERP/g）',d.R_actual,'%')+build('Theta（同口径历史重力比）',d.theta,'x');
  }catch(e){if(box)box.innerHTML=`<div class="ael-pro-empty">历史序列读取失败：${esc(e.message||e)}</div>`;if(badge)badge.textContent='历史源不可用';}
 }
 function showGravityHistoryPoint(el){if(!el)return;const block=el.closest('.ael-gravity-history-block');if(!block)return;const out=block.querySelector('.ael-gravity-history-selected');if(!out)return;const name=el.dataset.name||'历史数据',dateText=gravityDate(el.dataset.date),value=gravityFmt(Number(el.dataset.value),el.dataset.unit||'');out.innerHTML=`${esc(name)} · ${esc(dateText)} · <b>${esc(value)}</b>`;block.querySelectorAll('.ael-gravity-history-bar').forEach(b=>b.classList.toggle('selected',b===el));}
