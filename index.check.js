@@ -1,4 +1,60 @@
 
+
+(function(){
+  function initAELWeChatSDK(){
+    if(!window.wx) return;
+    var pageUrl = window.location.href.split('#')[0];
+    var apiUrl = '/api/wechat/config?url=' + encodeURIComponent(pageUrl);
+    fetch(apiUrl, {credentials:'same-origin', cache:'no-store'})
+      .then(function(r){
+        return r.json().then(function(data){ return {ok:r.ok, data:data}; });
+      })
+      .then(function(result){
+        if(!result.ok || !result.data || !result.data.ok) {
+          throw new Error((result.data && result.data.detail) || '微信 JS-SDK 配置获取失败');
+        }
+        var c = result.data;
+        wx.config({
+          debug: false,
+          appId: c.appId,
+          timestamp: c.timestamp,
+          nonceStr: c.nonceStr,
+          signature: c.signature,
+          jsApiList: ['updateAppMessageShareData','updateTimelineShareData']
+        });
+        wx.ready(function(){
+          window.AEL_WECHAT_READY = true;
+          try {
+            wx.updateAppMessageShareData({
+              title: document.title || 'AEL｜股票基本面驾驶舱',
+              desc: '美股 · 港股 · A股｜基本面 · 估值 · 技术 · 市场扫描',
+              link: window.location.href.split('#')[0],
+              imgUrl: location.origin + '/static/ael-share.png'
+            });
+            wx.updateTimelineShareData({
+              title: document.title || 'AEL｜股票基本面驾驶舱',
+              link: window.location.href.split('#')[0],
+              imgUrl: location.origin + '/static/ael-share.png'
+            });
+          } catch(e) {}
+        });
+        wx.error(function(err){
+          window.AEL_WECHAT_READY = false;
+          console.warn('AEL WeChat JS-SDK config error:', err);
+        });
+      })
+      .catch(function(err){
+        window.AEL_WECHAT_READY = false;
+        console.warn('AEL WeChat JS-SDK init failed:', err);
+      });
+  }
+  if(/MicroMessenger/i.test(navigator.userAgent)){
+    if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAELWeChatSDK);
+    else initAELWeChatSDK();
+  }
+})();
+
+
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
 const ASSET_INDEX=[
  {symbol:'XAUUSD',provider_symbol:'GC=F',provider_fallbacks:['XAUUSD=X'],name:'Gold Futures / USD',cn:'黄金',asset_type:'商品',market:'Spot',currency:'USD',icon:'🥇'},
@@ -297,33 +353,89 @@ function renderCockpitAccuracy(d){
  box.innerHTML=`<div class="ael-cockpit-accuracy-grid"><div class="ael-cockpit-accuracy-card"><strong>AEL</strong><div class="ael-cockpit-accuracy-score">${fmt(a)}</div><div class="ael-cockpit-accuracy-note">共同可验证季度：${n}</div></div><div class="ael-cockpit-accuracy-card"><strong>ATS</strong><div class="ael-cockpit-accuracy-score">${fmt(t)}</div><div class="ael-cockpit-accuracy-note">相同财报、相同信息截止点。</div></div><div id="cockPolyAccuracyCard" class="ael-cockpit-accuracy-card" style="display:none"></div></div><div class="ael-pro-note" style="margin-top:8px">这里比较的是历史平均高估/低估，不是简单比较一个百分比谁更高。Polymarket 历史样本不足时自动不参加比较。</div>`;
  const st=document.getElementById('cockpitCompareStatus');if(st){st.textContent=n?'AEL / ATS 已回测':'样本不足';st.className='ael-pro-status-pill'+(n?' ok':'');}
 }
+function polyZhText(raw,category){
+ const s=String(raw||'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+ if(!s)return '暂无市场问题';
+ const ticker=(s.match(/\(([A-Z]{1,6})\)/)||s.match(/\b([A-Z]{1,6})\b/))?.[1]||'';
+ const monthMap={January:'1月',February:'2月',March:'3月',April:'4月',May:'5月',June:'6月',July:'7月',August:'8月',September:'9月',October:'10月',November:'11月',December:'12月'};
+ let z=s;
+ Object.entries(monthMap).forEach(([en,zh])=>{z=z.replace(new RegExp('\\b'+en+'\\b','ig'),zh)});
+ z=z.replace(/Will\s+/ig,'').replace(/What will\s+/ig,'').replace(/Apple\s*\(AAPL\)/ig,'AAPL').replace(/\bApple\b/ig,ticker==='AAPL'?'AAPL':'');
+ z=z.replace(/Microsoft\s*\(MSFT\)/ig,'MSFT').replace(/NVIDIA\s*\(NVDA\)/ig,'NVDA');
+ z=z.replace(/\b(?:in|on)\s+(\d{1,2})\s+September\b/ig,'$1日9月');
+ z=z.replace(/\b(?:in|on)\s+(\d{1,2})\s+(\d{1,2})?\s*月\b/ig,'$1日');
+ z=z.replace(/\b(above|over|greater than|at least|exceed)\b/ig,'高于');
+ z=z.replace(/\b(below|under|less than)\b/ig,'低于');
+ z=z.replace(/\bclose above\b/ig,'收盘高于').replace(/\bclose below\b/ig,'收盘低于');
+ z=z.replace(/\bcloses above\b/ig,'收盘高于').replace(/\bcloses below\b/ig,'收盘低于');
+ z=z.replace(/\bhit\s*\(LOW\)/ig,'跌至').replace(/\bhit\s*\(HIGH\)/ig,'涨至').replace(/\bhit\b/ig,'触及');
+ z=z.replace(/\bup or down\b/ig,'上涨还是下跌').replace(/\bUp or Down\b/ig,'上涨还是下跌');
+ z=z.replace(/\bfinish week\b/ig,'周收盘').replace(/\bfinish\b/ig,'收盘');
+ z=z.replace(/\bweek of\b/ig,'当周').replace(/\bdaily\b/ig,'每日');
+ z=z.replace(/\bBeat Earnings\b/ig,'财报超预期').replace(/\babove consensus\b/ig,'高于一致预期').replace(/\bearnings\b/ig,'财报').replace(/\brevenue\b/ig,'营收').replace(/\bsales\b/ig,'销售额').replace(/\bEPS\b/ig,'每股收益');
+ z=z.replace(/\bprice\b/ig,'价格').replace(/\bstock\b/ig,'股价').replace(/\btrade at\b/ig,'交易于').replace(/\breach\b/ig,'达到').replace(/\bdip to\b/ig,'跌至').replace(/\bfall to\b/ig,'跌至');
+ z=z.replace(/\b(yes|no)\b/ig,m=>/^yes$/i.test(m)?'是':'否');
+ z=z.replace(/\$\s*(\d+(?:\.\d+)?)/g,'$1美元').replace(/\b(\d+(?:\.\d+)?)\s*(?:bn|billion|B)\b/gi,'$1十亿美元');
+ z=z.replace(/\([^)]*\)/g,'').replace(/\s+/g,' ').replace(/^[:：\-\s]+/,'').trim();
+ // If the original is a price market, normalize the common Polymarket templates
+ // to a compact Chinese title instead of leaking English source wording into AEL.
+ if(category==='price'){
+   const priceMatch=z.match(/(\d+(?:\.\d+)?)美元/);
+   const month=(z.match(/(\d{1,2}月)/)||[])[1]||'';
+   if(/上涨还是下跌/.test(z)) return `${ticker||'该股'} ${month}涨跌概率`.trim();
+   if(/跌至/.test(z) && priceMatch) return `${ticker||'该股'} ${month}跌至${priceMatch[1]}美元`.trim();
+   if(/涨至/.test(z) && priceMatch) return `${ticker||'该股'} ${month}涨至${priceMatch[1]}美元`.trim();
+   if(/收盘高于/.test(z) && priceMatch) return `${ticker||'该股'} ${month}收盘高于${priceMatch[1]}美元`.trim();
+   if(/收盘低于/.test(z) && priceMatch) return `${ticker||'该股'} ${month}收盘低于${priceMatch[1]}美元`.trim();
+ }
+ if(category==='earnings' && !/财报/.test(z))z='财报：'+z;
+ if(category==='eps' && !/每股收益/.test(z))z='每股收益：'+z;
+ if(category==='revenue' && !/营收/.test(z))z='营收：'+z;
+ return z||'暂无市场问题';
+}
+function polyOutcomeZh(raw){const s=String(raw||'').trim();if(!s)return'暂无数据';if(/^yes$/i.test(s))return'是';if(/^no$/i.test(s))return'否';return polyZhText(s,'other')}
+function polyFmtProbability(v){return v==null||!Number.isFinite(Number(v))?'暂无数据':`${(Number(v)*100).toFixed(1)}%`}
+function polyFmtCompact(v){return v==null||!Number.isFinite(Number(v))?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:0})}
+function polyCategoryLabel(c){return({earnings:'财报',eps:'EPS',revenue:'营收',price:'股价',other:'其他'})[c]||'其他'}
 function renderCockpitPoly(d){
- const eRev=document.getElementById('cockPolyRev'),eEps=document.getElementById('cockPolyEps'),beat=document.getElementById('cockPolyBeat');
- const rev=d?.revenue||{},eps=d?.eps||{};
- cockpitSet('cockPolyRev',rev.available&&rev.implicit_median!=null?cockpitMoney(rev.implicit_median):'暂无数据');
- cockpitSet('cockPolyEps',eps.available&&eps.implicit_median!=null?cockpitMoney(eps.implicit_median,3):'暂无数据');
- if(beat)beat.textContent=d?.beat_probability!=null?`链上美股预期 · 超预期概率 ${Number(d.beat_probability*100).toFixed(0)}%`:'Polymarket · 链上预测市场';
- const pa=document.getElementById('cockPolyAttention');if(pa)pa.textContent=d?.available?`${(d.markets||[]).length} 个相关市场`:'暂无可验证财报市场';
+ const beat=d?.beat_probability,rev=d?.revenue||{},eps=d?.eps||{},markets=Array.isArray(d?.markets)?d.markets:[];
+ cockpitSet('cockPolyRev',rev.available&&rev.implicit_median!=null?cockpitMoney(rev.implicit_median):'证据不足');
+ cockpitSet('cockPolyEps',eps.available&&eps.implicit_median!=null?cockpitMoney(eps.implicit_median,3):'证据不足');
+ const beatEl=document.getElementById('cockPolyBeat');
+ if(beatEl)beatEl.textContent=beat!=null?`财报超预期 ${polyFmtProbability(beat)}`:(markets.length?`已发现 ${markets.length} 个相关市场`:'证据不足');
+ const pa=document.getElementById('cockPolyAttention');if(pa)pa.textContent=markets.length?`${markets.length} 个相关市场`:'暂无可验证市场';
+ const list=document.getElementById('cockPolyMarkets');if(!list)return;
+ if(!markets.length){list.innerHTML='<div class="ael-pro-note">当前没有找到可验证的、与该股票直接相关的活跃 Polymarket 市场。</div>';return;}
+ const counts={earnings:0,eps:0,revenue:0,price:0,other:0};markets.forEach(m=>{const k=counts[m.category]!=null?m.category:'other';counts[k]+=1;});
+ const top=`<div class="ael-cockpit-poly-compact"><div><span>财报</span><b>${counts.earnings} 个</b></div><div><span>EPS</span><b>${counts.eps} 个</b></div><div><span>营收</span><b>${counts.revenue} 个</b></div><div><span>股价</span><b>${counts.price} 个</b></div></div>`;
+ const rows=markets.map(m=>{
+   const outs=Array.isArray(m.outcomes)?m.outcomes:[];
+   const probs=outs.map(o=>`<span class="ael-cockpit-poly-out">${esc(polyOutcomeZh(o.outcome))} ${polyFmtProbability(o.probability)}</span>`).join('');
+   const href=m.url?` · <a href="${esc(m.url)}" target="_blank" rel="noopener">查看市场</a>`:'';
+   return `<div class="ael-cockpit-poly-row"><div class="ael-cockpit-poly-title"><span class="ael-cockpit-poly-type">${esc(polyCategoryLabel(m.category))}</span>${esc(polyZhText(m.question||m.event_title,m.category))}</div><div class="ael-cockpit-poly-outs">${probs||'<span class="ael-cockpit-poly-out">暂无概率</span>'}</div><div class="ael-cockpit-poly-meta">流动性 ${polyFmtCompact(m.liquidity)} · 成交 ${polyFmtCompact(m.volume)}${href}</div></div>`;
+ }).join('');
+ const groups=['earnings','eps','revenue','price','other'].filter(k=>counts[k]).map(k=>`<span class="ael-cockpit-poly-group">${polyCategoryLabel(k)} ${counts[k]}</span>`).join('');
+ list.innerHTML=`${top}<details class="ael-cockpit-poly-details"><summary><span>全部相关市场</span><span>${markets.length} 个 · 点击展开</span></summary><div class="ael-cockpit-poly-groups">${groups}</div><div class="ael-cockpit-poly-list">${rows}</div></details>`;
+}
+function renderCockpitTechnical(x){
+ const box=document.getElementById('aelCockpitTechnical');if(!box)return;const status=document.getElementById('cockpitTechStatus');const t=x?.technical||{},r=t.resonance||{},support=r.support?.[0]?.price,resistance=r.resistance?.[0]?.price;
+ const f=(v,d=0)=>v==null||!Number.isFinite(Number(v))?'暂无数据':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:d});
+ const pressure=resistance==null?'暂无数据':`压力 ${f(resistance,2)} · 支撑 ${support==null?'暂无数据':f(support,2)}`;
+ box.innerHTML=`<div class="ael-cockpit-tech-item"><span>性价比评分</span><b>${f(t.value_score)}</b><small>${esc(t.value_state||'Lite原值')}</small></div><div class="ael-cockpit-tech-item"><span>技术强度</span><b>${f(t.score)}</b><small>${esc(t.state||'Lite原值')}</small></div><div class="ael-cockpit-tech-item"><span>综合评分</span><b>${f(t.composite_score)}</b><small>${esc(t.composite_state||'Lite原值')}</small></div><div class="ael-cockpit-tech-item"><span>共振压力/支撑</span><b>${esc(pressure)}</b><small>${r.available?'由 Lite 现有共振结果读取':'暂无可验证共振'}</small></div>`;if(status){status.textContent='已读取 Lite 原值';status.className='ael-pro-status-pill ok';}
 }
 function cockpitSyncSymbol(s){const i=document.getElementById('expectationSymbol');if(i)i.value=s;}
+let cockpitRunSeq=0;
 async function runAELCockpit(){
- const raw=(document.getElementById('cockpitSymbol')?.value||'').trim();const item=resolveSearchItem(raw);const s=(item?.symbol||raw).toUpperCase();if(!s)return;
- const hint=document.getElementById('cockpitSearchHint');if(hint)hint.textContent='正在读取核心结果；辅助模块随后独立加载。';cockpitSyncSymbol(s);
- document.getElementById('cockpitAelStatus')?.classList.remove('ok');
+ const raw=(document.getElementById('cockpitSymbol')?.value||'').trim();const item=resolveSearchItem(raw);const s=(item?.symbol||raw).toUpperCase();if(!s)return;const runId=++cockpitRunSeq;
+ const hint=document.getElementById('cockpitSearchHint');if(hint)hint.textContent='正在读取核心结果；Polymarket、ATS、回测后台独立加载，不阻塞首屏。';cockpitSyncSymbol(s);document.getElementById('cockpitAelStatus')?.classList.remove('ok');
  ['cockSellRev','cockSellEps','cockWhisperRev','cockWhisperEps','cockImpliedRev','cockImpliedEps','cockGuidanceRev','cockGuidanceEps','cockAelPriceRev','cockAelPriceEps','cockAtsPriceRev','cockAtsPriceEps','cockPolyRev','cockPolyEps'].forEach(id=>cockpitSet(id,'加载中…'));
- const core=document.getElementById('aelCockpitFundamentals');if(core)core.innerHTML='<div class="ael-cockpit-loading">正在读取核心基本面……</div>';
- const acc=document.getElementById('aelCockpitAccuracy');if(acc)acc.innerHTML='<div class="ael-cockpit-loading">AEL / ATS 回测随后加载……</div>';
- try{const r=await fetch(`/api/stock/core/${encodeURIComponent(s)}`);const d=await r.json();if(!r.ok)throw new Error(d.detail||'核心数据读取失败');const x=d.core||d;renderCockpitCompany(x,s);renderCockpitFundamentals(x);}catch(e){const st=document.getElementById('cockpitCoreStatus');if(st){st.textContent='核心数据暂不可用';st.className='ael-pro-status-pill';}renderCockpitCompany({},s);}
- // Core AEL results are launched in parallel with independent sidecars.
- const whisperP=runWhisper().catch(()=>null);
- const guidanceP=runGuidanceAts(s).catch(()=>null);
- const polyP=fetch(`/api/pro/polymarket/${encodeURIComponent(s)}`).then(r=>r.json()).catch(()=>({available:false}));
- const backP=runWhisperBacktest().catch(()=>null);
- const fairP=runFairBacktest().catch(()=>null);
- await Promise.allSettled([whisperP,guidanceP,polyP,backP,fairP]);
- try{const p=await polyP;renderCockpitPoly(p);}catch(e){}
- const h=document.getElementById('cockpitSearchHint');if(h)h.textContent='分析完成；辅助数据缺失不会影响 AEL 核心算法。';
+ const tech=document.getElementById('aelCockpitTechnical');if(tech)tech.innerHTML='<div class="ael-cockpit-tech-item"><span>性价比评分</span><b>加载中…</b><small>Lite原值</small></div><div class="ael-cockpit-tech-item"><span>技术强度</span><b>加载中…</b><small>Lite原值</small></div><div class="ael-cockpit-tech-item"><span>综合评分</span><b>加载中…</b><small>Lite原值</small></div><div class="ael-cockpit-tech-item"><span>共振压力/支撑</span><b>加载中…</b><small>Lite原值</small></div>';
+ const core=document.getElementById('aelCockpitFundamentals');if(core)core.innerHTML='<div class="ael-cockpit-loading">正在读取核心基本面……</div>';const acc=document.getElementById('aelCockpitAccuracy');if(acc)acc.innerHTML='<div class="ael-cockpit-loading">AEL / ATS 回测随后加载……</div>';
+ try{const r=await fetch(`/api/stock/core/${encodeURIComponent(s)}`),d=await r.json();if(!r.ok)throw new Error(d.detail||'核心数据读取失败');if(runId!==cockpitRunSeq)return;const x=d.core||d;renderCockpitCompany(x,s);renderCockpitFundamentals(x);renderCockpitTechnical(x);}catch(e){if(runId!==cockpitRunSeq)return;const st=document.getElementById('cockpitCoreStatus');if(st){st.textContent='核心数据暂不可用';st.className='ael-pro-status-pill';}renderCockpitCompany({},s);}
+ runWhisper().catch(()=>null);runGuidanceAts(s).catch(()=>null);fetch(`/api/pro/polymarket/${encodeURIComponent(s)}`).then(r=>r.json()).then(p=>{if(runId===cockpitRunSeq)renderCockpitPoly(p)}).catch(()=>{if(runId===cockpitRunSeq)renderCockpitPoly({available:false,markets:[],beat_probability:null})});runWhisperBacktest().catch(()=>null);runFairBacktest().catch(()=>null);
+ if(hint)hint.textContent='核心结果已加载；辅助数据正在后台更新，不阻塞概览。';
 }
+
 function renderCockpitCandidates(q){
  const box=document.getElementById('cockpitCandidateBox');if(!box)return;const a=String(q||'').trim();if(!a){box.classList.remove('show');box.innerHTML='';return;}
  const arr=SEARCH_INDEX.map(x=>({x,score:candidateScore(x,a)})).filter(x=>x.score>0).sort((a,b)=>b.score-a.score).slice(0,6).map(x=>x.x);if(!arr.length){box.classList.remove('show');box.innerHTML='';return;}
@@ -335,7 +447,97 @@ function switchProTab(tab){
   document.querySelectorAll(".ael-pro-tabpanel").forEach(x=>x.style.display="none");
   document.querySelectorAll(".ael-pro-tab").forEach(x=>x.classList.toggle("active",x.dataset.proTab===tab));
   const el=document.getElementById("pro-tab-"+tab);if(el)el.style.display="block";
+  if(tab==="gravity")loadGravityAuto(false);
 }
+function gravityFmt(v,suffix='',d=2){if(v===null||v===undefined||v===''||!Number.isFinite(Number(v)))return '源数据接入中';return Number(v).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})+suffix;}
+function gravityMoneyBillions(v,d=2){if(v===null||v===undefined||v===''||!Number.isFinite(Number(v)))return '源数据接入中';const n=Number(v);if(Math.abs(n)>=1000)return '$'+(n/1000).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})+'T';if(Math.abs(n)>=1)return '$'+n.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})+'B';return '$'+(n*1000).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})+'M';}
+function gravityDate(v){if(!v)return '日期待核验';const m=String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);if(!m)return esc(v);return `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m[2])-1]} ${Number(m[3])} ${m[1]}`;}
+function gravitySafeLink(url){try{const u=new URL(url,window.location.href);if(!['https:','http:'].includes(u.protocol))return '';return u.href;}catch(e){return '';}}
+function syncGravityIndex(source){const a=document.getElementById('gravityAutoIndex'),b=document.getElementById('gravityBacktestIndex');if(source==='auto'&&a&&b)b.value=a.value;else if(source==='backtest'&&a&&b)a.value=b.value;if(source==='auto')loadGravityAuto(false);}
+function charterFmt(v,unit=''){if(v==null||!Number.isFinite(Number(v)))return '暂无数据';return Number(v).toLocaleString('en-US',{maximumFractionDigits:2,minimumFractionDigits:0})+(unit?' '+unit:'');}
+function charterDate(s){if(!s)return '未知';const d=new Date(String(s).slice(0,10)+'T00:00:00Z');return Number.isNaN(d.getTime())?String(s):d.toLocaleDateString('en-US',{month:'short',year:'numeric',timeZone:'UTC'});}
+function charterTrendChart(title,rows,key,unit){const clean=(rows||[]).filter(r=>r[key]!=null&&Number.isFinite(Number(r[key])));if(clean.length<2)return `<div class="ael-gravity-history-block"><b>${title}</b><div class="ael-pro-empty">有效历史点不足</div></div>`;const vals=clean.map(r=>Number(r[key])),min=Math.min(...vals),max=Math.max(...vals),span=max-min||1,w=640,h=150,pad=12;const points=vals.map((v,i)=>`${(pad+i*(w-2*pad)/(vals.length-1)).toFixed(1)},${(h-pad-((v-min)/span)*(h-2*pad)).toFixed(1)}`).join(' ');const dots=clean.filter((r,i)=>i===0||i===clean.length-1||i%Math.max(1,Math.floor(clean.length/24))===0).map(r=>{const i=clean.indexOf(r),x=pad+i*(w-2*pad)/(vals.length-1),y=h-pad-((Number(r[key])-min)/span)*(h-2*pad);return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.4" fill="#e5c66d" tabindex="0" role="button" aria-label="${charterDate(r.date)} ${charterFmt(r[key],unit)}" onclick="showCharterTheoryPoint('${key}','${r.date}',${Number(r[key])},'${unit}')"><title>${charterDate(r.date)} · ${charterFmt(r[key],unit)}</title></circle>`}).join('');return `<div class="ael-gravity-history-block"><div class="ael-gravity-history-head"><b>${title}</b><span>最低 ${charterFmt(min,unit)} · 最高 ${charterFmt(max,unit)}</span></div><svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${title}长期趋势折线图" style="width:100%;height:auto;display:block;margin-top:8px;overflow:visible"><polyline points="${points}" fill="none" stroke="#86b4d0" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>${dots}</svg><div class="ael-gravity-history-axis"><span>${charterDate(clean[0].date)}</span><span>${charterDate(clean[clean.length-1].date)}</span></div><div class="ael-gravity-history-selected" id="charter-selected-${key}">最新值：${charterDate(clean[clean.length-1].date)} · <b>${charterFmt(clean[clean.length-1][key],unit)}</b> · 点击图中节点查看精确值</div></div>`;}
+function showCharterTheoryPoint(key,date,value,unit){const el=document.getElementById('charter-selected-'+key);if(el)el.innerHTML=`${charterDate(date)} · <b>${charterFmt(value,unit)}</b>`;}
+async function loadCharterTheoryHistory(refresh=false){const box=document.getElementById('charterTheoryCharts'),status=document.getElementById('charterTheoryStatus'),btn=document.getElementById('gravityCharterRefresh');if(btn)btn.disabled=true;if(status)status.textContent='正在读取长期季度序列…';try{const r=await fetch(`/api/pro/gravity/charter-theory/history?limit=320&refresh=${refresh?'true':'false'}`);const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.message||d.detail||'长期序列读取失败');const m=d.metrics||{},series=d.series||[];document.getElementById('charterQOverV').textContent=charterFmt(m.Q_over_V_billions,'十亿美元');document.getElementById('charterM2OverP').textContent=charterFmt(m.M2_over_P_billions,'十亿美元');document.getElementById('charterInvP').textContent=charterFmt(m.one_over_P,'倍');document.getElementById('charterQOverMV').textContent=charterFmt(m.Q_over_MV,'倍');document.getElementById('charterQOverVMeta').textContent=`截至 ${charterDate(m.date)} · Q/V`;document.getElementById('charterM2OverPMeta').textContent=`恒等式偏差 ${charterFmt(m.identity_gap_pct,'%')}`;if(status)status.textContent=`${charterDate(d.start_date)} — ${charterDate(d.end_date)} · ${d.count} 个季度 · 已对齐 M₂、V、P、Q`;if(box)box.innerHTML=charterTrendChart('公司整体市值：Q/V',series,'Q_over_V_billions','十亿美元')+charterTrendChart('公司整体市值：M₂/P',series,'M2_over_P_billions','十亿美元')+charterTrendChart('普通股价格：1/P',series,'one_over_P','倍')+charterTrendChart('普通股价格：Q/(M₂V)',series,'Q_over_MV','倍')+charterTrendChart('公司市值恒等式偏差',series,'identity_gap_pct','%');const warn=document.getElementById('charterTheoryWarning');if(warn)warn.textContent=(d.warning||'')+` 当前序列最大市值恒等式偏差 ${charterFmt(d.summary?.max_abs_identity_gap_pct,'%')}；最大股价恒等式偏差 ${charterFmt(d.summary?.max_abs_price_identity_gap_pct,'%')}。注意：V=名义 GDP/M₂，且名义 GDP 与实际 GDP、GDP 平减指数存在国民核算恒等关系，因此两组等式在当前代理构造下具有代数耦合；曲线展示长期尺度变化，不等于独立预测能力已获验证。`; }catch(e){if(status)status.textContent='长期趋势不可用：'+(e.message||e);if(box)box.innerHTML='<div class="ael-pro-empty">没有取得足够的共同历史数据；请检查数据源状态后重试。</div>';document.getElementById('charterTheoryWarning').textContent='没有用模拟数据填充图表。';}finally{if(btn)btn.disabled=false;}}
+async function loadGravityAuto(refresh=false){
+ if(!window.__charterTheoryLoaded){window.__charterTheoryLoaded=true;loadCharterTheoryHistory(false);}
+ const idx=document.getElementById('gravityAutoIndex')?.value||'SP500';const btn=document.getElementById('gravityAutoRefreshBtn'),badge=document.getElementById('gravityAutoBadge');
+ if(btn){btn.disabled=true;btn.textContent='正在自动取数…';}if(badge)badge.textContent='数据读取中';
+ const loadingIds=['gravityBuffettValue','gravityCapeValue','gravityRObjective','gravityRActual','gravityTheta','gravityRealYield'];loadingIds.forEach(id=>{const el=document.getElementById(id);if(el&&(!el.textContent||el.textContent.includes('源数据')||el.textContent.includes('正在')))el.textContent='正在读取';});
+ try{
+  const r=await fetch(`/api/pro/gravity/automatic?index=${encodeURIComponent(idx)}&refresh=${refresh?'true':'false'}`);const d=await r.json();if(!r.ok)throw new Error(d.detail||d.error||'自动指标读取失败');
+  if(!d.ok){if(badge)badge.textContent=d.status||'源数据暂不可用';const msg=d.message||d.error||'自动数据源请求失败';const src=document.getElementById('gravityAutoSources');if(src)src.innerHTML=`<div class="ael-pro-empty">${esc(msg)}</div>`;return;}
+  const m=d.metrics||{};if(badge)badge.textContent=d.status==='READY'?'自动数据已更新':'部分数据已更新';
+  document.getElementById('gravityAutoAsOf').textContent=gravityDate(String(d.as_of||'').slice(0,10));document.getElementById('gravityAutoSourcesMini').textContent=`${d.index_name||idx} · ${d.errors?.length?`${d.errors.length} 项数据源异常`:'来源状态已核验'}`;
+  document.getElementById('gravityBuffettValue').textContent=m.buffett_indicator_pct_gdp==null?'取数失败':(m.buffett_quality_warning?'口径异常 · '+gravityFmt(m.buffett_indicator_pct_gdp,'%'):gravityFmt(m.buffett_indicator_pct_gdp,'%'));
+  document.getElementById('gravityBuffettMeta').textContent=(m.buffett_quality_warning?'⚠ '+m.buffett_quality_warning+' · ':'')+(m.buffett_observation_date?`观测期 ${gravityDate(m.buffett_observation_date)} · ${m.buffett_frequency==='annual'?'世界银行年度上市公司市值/GDP':'公开数据代理'}${m.buffett_definition?' · '+m.buffett_definition:''}`:(m.buffett_definition||'没有通过口径校验的巴菲特型指标'));
+  document.getElementById('gravityBuffettPctl').textContent=m.buffett_percentile==null?'历史百分位不可算':`历史百分位 ${gravityFmt(m.buffett_percentile,'%',1)}`;
+  document.getElementById('gravityCapeValue').textContent=m.cape==null?'取数失败':gravityFmt(m.cape,'x',2);
+  document.getElementById('gravityCapeMeta').textContent=m.cape_observation_date?`官方月度数据 · ${gravityDate(m.cape_observation_date)}`:'Shiller 官方月度数据';
+  document.getElementById('gravityCapePctl').textContent=m.cape_percentile==null?'历史百分位不可算':`历史百分位 ${gravityFmt(m.cape_percentile,'%',1)}`;
+  document.getElementById('gravityRObjective').textContent=m.R_objective_pct==null?'客观链待补齐':gravityFmt(m.R_objective_pct,'%');
+  document.getElementById('gravityRObjectiveMeta').textContent=`ERP* ${m.erp_objective_pct==null?'—':gravityFmt(m.erp_objective_pct,'%')} · g* ${m.g_objective_pct==null?'—':gravityFmt(m.g_objective_pct,'%')}`;
+  document.getElementById('gravityRObjectivePctl').textContent=m.R_objective_percentile==null?`历史百分位不可算 · ${Number(m.R_objective_history_count||0)} 个点`:`历史百分位 ${gravityFmt(m.R_objective_percentile,'%',1)} · ${Number(m.R_objective_history_count||0)} 个点`;
+  const rActualLabel=document.getElementById('gravityRActualLabel');
+  if(m.R_actual_pct!=null){document.getElementById('gravityRActual').textContent=gravityFmt(m.R_actual_pct,'%');if(rActualLabel)rActualLabel.textContent='R 实际 / 买方端（当前匹配）';document.getElementById('gravityRActualMeta').textContent=`ERPB ${m.erp_buyer_pct==null?'未识别':gravityFmt(m.erp_buyer_pct,'%')} · gB ${m.g_buyer_pct==null?'未识别':gravityFmt(m.g_buyer_pct,'%')} · ${m.buyer_source_as_of?gravityDate(m.buyer_source_as_of):'来源日期待核验'} · ${m.buyer_horizon_years==null?'期限待核验':gravityFmt(m.buyer_horizon_years,'年',1)}`;}
+  else if(m.latest_verified_R_actual_pct!=null){document.getElementById('gravityRActual').textContent=gravityFmt(m.latest_verified_R_actual_pct,'%')+'（历史）';if(rActualLabel)rActualLabel.textContent='R 实际 / 买方端（最近可验证历史）';document.getElementById('gravityRActualMeta').textContent=`观测 ${m.latest_verified_history_date?gravityDate(m.latest_verified_history_date):'日期待核验'} · 已过 ${m.latest_verified_history_age_days==null?'未知':m.latest_verified_history_age_days+' 天'} · ${m.latest_verified_institution_count||0} 家机构 · 不代表当前 R`;}
+  else {document.getElementById('gravityRActual').textContent=m.buyer_source_status==='DOWNLOADING'?'机构数据自动下载中':'暂无合格机构 ERP/g';if(rActualLabel)rActualLabel.textContent='R 实际 / 买方端';document.getElementById('gravityRActualMeta').textContent=`ERPB ${m.erp_buyer_pct==null?'未识别':gravityFmt(m.erp_buyer_pct,'%')} · gB ${m.g_buyer_pct==null?'未识别':gravityFmt(m.g_buyer_pct,'%')} · 需要同口径、约10年期限且可核验的机构来源`;}
+  document.getElementById('gravityRActualPctl').textContent=m.R_actual_percentile==null?`历史百分位不可算 · ${Number(m.R_actual_history_count||0)} 个匹配点`:`历史百分位 ${gravityFmt(m.R_actual_percentile,'%',1)} · ${Number(m.R_actual_history_count||0)} 个匹配点`;
+  const thetaLabel=document.getElementById('gravityThetaLabel');
+  if(m.Theta_actual_over_objective!=null){document.getElementById('gravityTheta').textContent=gravityFmt(m.Theta_actual_over_objective,'x',3);if(thetaLabel)thetaLabel.textContent='Theta 重力比（当前匹配）';document.getElementById('gravityThetaMeta').textContent='R客观 / R实际 · 均为实际口径 · 约10年期限 · 已校验日期';}
+  else if(m.latest_verified_Theta!=null){document.getElementById('gravityTheta').textContent=gravityFmt(m.latest_verified_Theta,'x',3)+'（历史）';if(thetaLabel)thetaLabel.textContent='Theta 重力比（最近可验证历史）';document.getElementById('gravityThetaMeta').textContent=`信号日期 ${m.latest_verified_history_date?gravityDate(m.latest_verified_history_date):'未知'} · 已过 ${m.latest_verified_history_age_days==null?'未知':m.latest_verified_history_age_days+' 天'} · 不是当前预期`;}
+  else {document.getElementById('gravityTheta').textContent='等待合格机构 ERP/g';if(thetaLabel)thetaLabel.textContent='Theta 重力比';document.getElementById('gravityThetaMeta').textContent='自动等待真实机构数据；实际口径、约10年期限、日期同步不合格就不显示';}
+  document.getElementById('gravityThetaPctl').textContent=m.Theta_percentile==null?`历史百分位不可算 · ${Number(m.Theta_history_count||0)} 个匹配点`:`历史百分位 ${gravityFmt(m.Theta_percentile,'%',1)} · ${Number(m.Theta_history_count||0)} 个匹配点`;
+  if(m.buyer_gravity_state==='NEGATIVE_GRAVITY_CANDIDATE'){document.getElementById('gravityRActualMeta').textContent+=' · 负重力预警候选：预期增长高于 ERP+实际利率；需历史验证，不能单凭此项判定泡沫';}
+  document.getElementById('gravityRealYield').textContent=m.risk_free_real_10y_pct==null?'取数失败':gravityFmt(m.risk_free_real_10y_pct,'%');
+  document.getElementById('gravityRealYieldMeta').textContent=m.risk_free_observation_date?`FRED DFII10 · ${gravityDate(m.risk_free_observation_date)}`:'FRED 十年期实际国债收益率';
+  const macroBadge=document.getElementById('gravityMacroInputBadge');if(macroBadge)macroBadge.textContent=m.A_over_M_source_status==='READY'?'宏观变量已对齐':'部分宏观变量待源数据';
+  const alpha=document.getElementById('gravityAlphaProxyValue');if(alpha)alpha.textContent=m.alpha_proxy_pct==null?'源数据未齐':gravityFmt(m.alpha_proxy_pct,'%');
+  const alphaMeta=document.getElementById('gravityAlphaProxyMeta');if(alphaMeta)alphaMeta.textContent=`CPATAX / GDP · ${m.alpha_proxy_date?gravityDate(m.alpha_proxy_date):'日期待核验'} · 公开代理`;
+  const m1=document.getElementById('gravityM1Value');if(m1)m1.textContent=m.M1_money_stock==null?'源数据未齐':gravityMoneyBillions(m.M1_money_stock,2);
+  const m1meta=document.getElementById('gravityM1Meta');if(m1meta)m1meta.textContent=`FRED M1SL · ${m.M1_observation_date?gravityDate(m.M1_observation_date):'日期待核验'} · 十亿美元（10⁹ USD）`;
+  const vel=document.getElementById('gravityVelocityValue');if(vel)vel.textContent=m.V_M1_velocity==null?'源数据未齐':gravityFmt(m.V_M1_velocity,'x',3);
+  const velmeta=document.getElementById('gravityVelocityMeta');if(velmeta)velmeta.textContent=`FRED M1V · ${m.V_observation_date?gravityDate(m.V_observation_date):'日期待核验'}`;
+  const pv=document.getElementById('gravityPValue');if(pv)pv.textContent=m.P_GDP_deflator==null?'源数据未齐':gravityFmt(m.P_GDP_deflator,'',2);
+  const pmeta=document.getElementById('gravityPMeta');if(pmeta)pmeta.textContent=`FRED GDPDEF · ${m.P_observation_date?gravityDate(m.P_observation_date):'日期待核验'}`;
+  const qv=document.getElementById('gravityQValue');if(qv)qv.textContent=m.Q_real_gdp_billions==null?'源数据未齐':gravityMoneyBillions(m.Q_real_gdp_billions,2);
+  const qmeta=document.getElementById('gravityQMeta');if(qmeta)qmeta.textContent=`FRED GDPC1 · ${m.Q_observation_date?gravityDate(m.Q_observation_date):'日期待核验'} · 十亿美元（2017年链式美元、年化季调）`;
+  const amo=document.getElementById('gravityAMObjectiveValue');if(amo)amo.textContent=m.A_over_M_objective_billions==null?'不可计算':`${gravityMoneyBillions(m.A_over_M_objective_billions,2)}（模型隐含市值代理）`;
+  const amoMeta=document.getElementById('gravityAMObjectiveMeta');if(amoMeta)amoMeta.textContent=m.A_over_M_objective_billions==null?'R客观≤0或宏观源不齐':`α代理 × M1 × V / R客观 · ${m.alpha_proxy_date?gravityDate(m.alpha_proxy_date):'日期待核验'}`;
+  const amb=document.getElementById('gravityAMBuyerValue');if(amb)amb.textContent=m.A_over_M_buyer_billions==null?'等待合格 R实际':`${gravityMoneyBillions(m.A_over_M_buyer_billions,2)}（模型隐含市值代理）`;
+  const ambMeta=document.getElementById('gravityAMBuyerMeta');if(ambMeta)ambMeta.textContent=m.A_over_M_buyer_billions==null?'当前买方端未通过 ERP/g、期限/时点与新鲜度核验':'α代理 × M1 × V / R实际';
+  const formulaNote=document.getElementById('gravityMacroFormulaNote');if(formulaNote)formulaNote.textContent=m.alpha_proxy_definition||'公式：[A/M] = (α × M1 × V) / Ry*。α 当前为企业税后利润/GDP代理，不等同于理论参数的直接观测。';
+  const bStatus=d.buyer_source||{};document.getElementById('gravityBuyerStatus').textContent=({'DOWNLOADING':'自动下载中','USABLE_ERP_AND_G':'ERP/g 已匹配','ERP_ONLY_G_MISSING':'ERP 已取到，g 不合格','ERP_G_BASIS_OR_SOURCE_MISSING':'ERP/g 口径不匹配','STALE_SOURCE':'机构预期过旧','SOURCE_DATE_MISMATCH':'机构日期不匹配','STALE_SOURCE_OR_DATE_MISMATCH':'机构日期过旧/不匹配','RETURN_BASIS_UNKNOWN':'回报口径未知','RETURN_BASIS_MISMATCH':'实际/名义口径不一致','HORIZON_MISMATCH':'期限不匹配（需要约 10 年）','RISK_FREE_YIELD_UNAVAILABLE':'对应日期的无风险利率缺失','SOURCE_DOWNLOADED_BUT_FIELDS_UNMAPPED':'已下载，字段需审验','DOWNLOAD_FAILED':'下载受阻','NOT_STARTED':'等待自动同步'}[m.buyer_source_status]||m.buyer_source_status||'检查中');
+  const buyerGateNote=({'STALE_SOURCE':'当前源已超过 180 天；仅展示带日期的最近历史配对值，不作为当前 R。','SOURCE_DATE_MISMATCH':'机构观察日与 Shiller CAPE 相差超过 45 天；当前 Theta 已阻断。','RETURN_BASIS_MISMATCH':'机构 ERP/g 不是同为实际回报口径；不与客观 R 混算。','HORIZON_MISMATCH':'机构预测期限与约 10 年客观口径不一致；当前 Theta 已阻断。','RISK_FREE_YIELD_UNAVAILABLE':'缺少买方观察日之前可用的实际利率；当前 R 已阻断。','ERP_G_BASIS_OR_SOURCE_MISSING':'原始机构来源缺少可验证的同口径 ERP 与前瞻 g。'}[m.buyer_source_status]||'数据由服务端自动获取；不需要手动输入。');
+  document.getElementById('gravityBuyerStatusNote').textContent=buyerGateNote+' '+(bStatus.message||'');
+  const breakdown=[['观测指数',d.index_name||idx],['巴菲特指标口径',(m.buffett_definition||'世界银行上市公司市值/GDP年度指标；非日频估值')],['CAPE口径',m.cape_scope||'Shiller官方CAPE'],['十年期实际利率',m.risk_free_real_10y_pct==null?'源数据接入中':gravityFmt(m.risk_free_real_10y_pct,'%')],['客观增长 g*',m.g_objective_pct==null?'实际盈利增长历史序列缺失':gravityFmt(m.g_objective_pct,'%')],['买方数据日期',m.buyer_source_as_of?gravityDate(m.buyer_source_as_of):'自动机构源尚未形成合格ERP/g'],['Theta 状态',m.Theta_actual_over_objective==null?'不输出不合格比值':'已匹配计算']];
+  document.getElementById('gravityAutoBreakdown').innerHTML=breakdown.map(([a,b])=>`<div class="ael-gravity-breakdown-row"><span>${esc(a)}</span><b>${esc(b)}</b></div>`).join('');
+  const sources=d.sources||[];document.getElementById('gravityAutoSources').innerHTML=sources.map(x=>`<div class="ael-gravity-source-row"><div class="ael-gravity-source-head"><b>${esc(x.name||'数据源')}</b><span class="ael-pro-status-pill ${x.available?'ok':'wait'}">${x.available?'可用':'未就绪'}</span></div><small>最后观测：${esc(x.last_observation?gravityDate(x.last_observation):'尚未读取')}</small>${gravitySafeLink(x.url)?`<a href="${esc(gravitySafeLink(x.url))}" target="_blank" rel="noopener">查看来源 ↗</a>`:''}</div>`).join('')||'<div class="ael-pro-empty">暂无来源信息。</div>';
+  if(Array.isArray(d.errors)&&d.errors.length){document.getElementById('gravityAutoSources').insertAdjacentHTML('beforeend',`<div class="ael-pro-note" style="margin-top:6px">异常：${d.errors.map(esc).join('；')}</div>`);}
+  await loadGravityAutoHistory(idx);
+ }catch(e){if(badge)badge.textContent='自动取数失败';const src=document.getElementById('gravityAutoSources');if(src)src.innerHTML=`<div class="ael-pro-empty">自动取数请求失败：${esc(e.message||e)}。请稍后自动重试，不需要填任何输入框。</div>`;}
+ finally{if(btn){btn.disabled=false;btn.textContent='自动刷新全部数据';}}
+}
+async function loadGravityAutoHistory(index){
+ const box=document.getElementById('gravityPercentileHistory'),badge=document.getElementById('gravityHistoryBadge');if(box)box.innerHTML='<div class="ael-pro-empty">读取历史序列…</div>';
+ try{const r=await fetch(`/api/pro/gravity/automatic/history?index=${encodeURIComponent(index)}&limit=120`);const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.detail||d.error||'读取历史失败');
+  if(badge)badge.textContent=`CAPE ${Number(d.count_cape||0)} 月 · Buffett ${Number(d.count_buffett||0)} 季 · Theta ${Number(d.count_theta||0)} 匹配点`;
+  const build=(name,rows,unit)=>{const clean=(rows||[]).filter(x=>x.value!=null&&Number.isFinite(Number(x.value)));if(!clean.length)return `<div class="ael-gravity-history-block"><div class="ael-gravity-history-head"><b>${name}</b><span>暂无通过口径校验的数据</span></div><div class="ael-pro-note">本序列未通过来源/口径校验或暂时取数失败。不会用空值、旧值或代理数据补齐。</div></div>`;const vals=clean.map(x=>Number(x.value));const min=Math.min(...vals),max=Math.max(...vals),span=max-min||1;const plot=clean.slice(-60);const bars=plot.map((x,i)=>`<button type="button" class="ael-gravity-history-bar" aria-label="${esc(name)} ${esc(gravityDate(x.date))} ${gravityFmt(x.value,unit)}" data-name="${esc(name)}" data-date="${esc(x.date)}" data-value="${Number(x.value)}" data-unit="${esc(unit)}" title="点击查看 ${esc(gravityDate(x.date))} 的准确值" onclick="showGravityHistoryPoint(this)" style="height:${Math.max(4,((Number(x.value)-min)/span)*64)}px"></button>`).join('');const tableRows=clean.slice(-12).reverse().map(x=>`<tr><td>${esc(gravityDate(x.date))}</td><td>${gravityFmt(x.value,unit,unit==='x'?2:2)}</td></tr>`).join('');return `<div class="ael-gravity-history-block"><div class="ael-gravity-history-head"><b>${name}</b><span>最低 ${gravityFmt(min,unit)} · 最高 ${gravityFmt(max,unit)}</span></div><div class="ael-gravity-history-bars" role="group" aria-label="${esc(name)}历史数据，点击柱形查看具体数值">${bars}</div><div class="ael-gravity-history-axis"><span>${esc(gravityDate(plot[0].date))}</span><span>${esc(gravityDate(plot[plot.length-1].date))}</span></div><div class="ael-gravity-history-selected" aria-live="polite">最新值：${esc(gravityDate(clean[clean.length-1].date))} · <b>${gravityFmt(clean[clean.length-1].value,unit)}</b> · 点击任一柱形查看精确值</div><details class="ael-gravity-history-details"><summary>查看最近 12 个具体数值</summary><div class="ael-gravity-history-table-wrap"><table><thead><tr><th>日期</th><th>数值</th></tr></thead><tbody>${tableRows}</tbody></table></div></details></div>`;};
+  if(box)box.innerHTML=build('巴菲特指标（季度历史）',d.buffett,'%')+build('Shiller CAPE（月度历史）',d.cape,'x')+build('R 客观（客观 ERP/g 历史）',d.R_objective,'%')+build('R 实际（机构真实口径 ERP/g）',d.R_actual,'%')+build('Theta（同口径历史重力比）',d.theta,'x');
+ }catch(e){if(box)box.innerHTML=`<div class="ael-pro-empty">历史序列读取失败：${esc(e.message||e)}</div>`;if(badge)badge.textContent='历史源不可用';}
+}
+function showGravityHistoryPoint(el){if(!el)return;const block=el.closest('.ael-gravity-history-block');if(!block)return;const out=block.querySelector('.ael-gravity-history-selected');if(!out)return;const name=el.dataset.name||'历史数据',dateText=gravityDate(el.dataset.date),value=gravityFmt(Number(el.dataset.value),el.dataset.unit||'');out.innerHTML=`${esc(name)} · ${esc(dateText)} · <b>${esc(value)}</b>`;block.querySelectorAll('.ael-gravity-history-bar').forEach(b=>b.classList.toggle('selected',b===el));}
+async function runGravityAutoYearBacktest(){
+ const year=Number(document.getElementById('gravityAutoYear')?.value),idx=document.getElementById('gravityBacktestIndex')?.value||'SP500',metric=document.getElementById('gravityBacktestMetric')?.value||'cape';const st=document.getElementById('gravityAutoYearStatus'),kpis=document.getElementById('gravityAutoYearMetrics'),box=document.getElementById('gravityAutoYearReturns');
+ if(!Number.isInteger(year)||year<1900||year>new Date().getFullYear()){if(st)st.textContent=`年份必须在 1900 至 ${new Date().getFullYear()} 之间。`;return;}
+ if(st)st.textContent='正在读取该年真实指标，并核对后续指数行情…';if(kpis)kpis.innerHTML='';if(box)box.innerHTML='<div class="ael-pro-empty">正在读取后续表现…</div>';
+ try{const r=await fetch(`/api/pro/gravity/automatic/year-backtest?year=${year}&index=${encodeURIComponent(idx)}&metric=${encodeURIComponent(metric)}`);const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.detail||d.error||'回测失败');
+  if(st)st.innerHTML=`<b>${esc(d.index_name||idx)} · ${year} 年基准日 ${esc(gravityDate(d.anchor_date))}</b><br>回测指标：${esc(metric)} · 指标历史观测日：${esc(d.metric_observation_date?gravityDate(d.metric_observation_date):'该指标当年无可验证的点时值')} · 历史百分位：${d.metric_percentile_at_year==null?'不可计算':gravityFmt(d.metric_percentile_at_year,'%',1)}<br>${esc(d.warning||'')}`;
+  const im=d.indicator_values||{},label={buffett:'巴菲特指标',cape:'CAPE',R_actual:'R 实际',R_objective:'R 客观',theta:'Theta'};if(kpis)kpis.innerHTML=Object.entries(label).map(([k,v])=>`<div class="ael-gravity-year-kpi"><span>${v}</span><b>${im[k]==null?'历史点时值不可识别':(k==='buffett'?gravityFmt(im[k],'%'):k==='cape'?gravityFmt(im[k],'x'):gravityFmt(im[k],k==='theta'?'x':'%'))}</b><small>${k==='cape'?'Shiller / S&P 500参考':k==='buffett'?'世界银行上市公司市值/GDP年度指标':'仅有正式历史来源时计算'}</small></div>`).join('');
+  const rows=d.horizons||[];if(box)box.innerHTML=rows.map(x=>{const value=x.return_pct;const cls=value==null?'':value>=0?'positive':'negative';return `<div class="ael-gravity-return-row"><b>${Number(x.years)} 年</b><span>${x.status==='OBSERVED'?`${esc(gravityDate(x.actual_date))} · 年化 ${x.cagr_pct==null?'—':gravityFmt(x.cagr_pct,'%')}`:esc(x.message||'暂无数据')}</span><strong class="${cls}">${value==null?'未到期':(value>=0?'+':'')+gravityFmt(value,'%')}</strong></div>`}).join('')||'<div class="ael-pro-empty">没有后续收益数据。</div>';
+ }catch(e){if(st)st.textContent='指定年份回测失败：'+(e.message||e);if(box)box.innerHTML='<div class="ael-pro-empty">未生成结果；不会用当前指标填补历史信号。</div>';}
+}
+
 function proResearchStock(){
   const raw=(document.getElementById("proSymbol")?.value||"").trim(),meta=resolveSearchItem(raw),s=(meta?.symbol||raw).trim().toUpperCase();
   const panel=document.getElementById("proResearchPanel"),st=document.getElementById("proResearchStatus");

@@ -281,6 +281,58 @@ def _cape_history(force: bool = False) -> list[dict[str, Any]]:
         except Exception:
             old = []
     errors = []
+    # First fallback: independently maintained JSON mirror of Robert Shiller's
+    # public monthly dataset. It is parsed by named fields, not fixed column offsets.
+    mirror_url = "https://adambnash-afk.github.io/shiller-data/data/stock_market_data.json"
+    try:
+        response = _HTTP.get(mirror_url, timeout=(6, 16))
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data", []) if isinstance(payload, dict) else []
+        mirror_rows = []
+        for item in data:
+            try:
+                year = int(item.get("year"))
+                month = int(item.get("month"))
+                dt = date(year, month, 1)
+            except (TypeError, ValueError):
+                raw_date = _finite(item.get("date"))
+                if raw_date is None:
+                    continue
+                year = int(raw_date)
+                month = int(round((raw_date - year) * 100))
+                try:
+                    dt = date(year, month, 1)
+                except ValueError:
+                    continue
+            cape = _finite(item.get("cape"))
+            if cape is None or cape <= 0:
+                continue
+            mirror_rows.append({"date": dt.isoformat(), "cape": cape,
+                "real_earnings": _finite(item.get("real_earnings")),
+                "real_earnings_growth_10y_pct": None,
+                "source": "Robert Shiller public data via community JSON mirror",
+                "source_url": mirror_url})
+        mirror_rows.sort(key=lambda r: r["date"])
+        if len(mirror_rows) >= 120:
+            for row in mirror_rows:
+                if row.get("real_earnings") is None:
+                    continue
+                current = date.fromisoformat(row["date"])
+                target = date(current.year - 10, current.month, 1)
+                prior = [x for x in mirror_rows if x["date"] <= target.isoformat() and x.get("real_earnings") and x["real_earnings"] > 0]
+                if prior and row["real_earnings"] > 0:
+                    base = prior[-1]
+                    years = (current - date.fromisoformat(base["date"])).days / 365.2425
+                    if years >= 9.5:
+                        row["real_earnings_growth_10y_pct"] = ((row["real_earnings"] / base["real_earnings"]) ** (1 / years) - 1) * 100
+            disk.write_text(json.dumps({"source_url": mirror_url, "cached_at": _now_utc(), "cached_at_epoch": time.time(), "rows": mirror_rows}, ensure_ascii=False), encoding="utf-8")
+            with _LOCK:
+                _CACHE[key] = {"ts": time.time(), "value": mirror_rows}
+            return mirror_rows
+        errors.append("Shiller JSON mirror: insufficient valid monthly rows")
+    except Exception as exc:
+        errors.append(f"Shiller JSON mirror: {str(exc)[:120]}")
     for url in SHILLER_URLS:
         try:
             response = _HTTP.get(url, timeout=(6, 16))
@@ -939,28 +991,112 @@ def _latest_row_on_or_before(rows: list[dict[str, Any]], as_of: str) -> dict[str
     return eligible[-1] if eligible else None
 
 
+def _build_alpha_m1_v_history(macro_obs: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build a point-in-time quarterly series for alpha * M1 * V.
+
+    alpha is explicitly an operational proxy CPATAX / nominal GDP. M1SL and
+    M1V are public FRED monetary-series inputs. All monetary amounts are USD
+    billions, so the numerator is also USD billions. We only use observations
+    dated on or before the quarter being calculated.
+    """
+    profit_rows = (macro_obs.get("CORPORATE_PROFIT_AFTER_TAX") or {}).get("history") or []
+    gdp_rows = (macro_obs.get("NOMINAL_GDP") or {}).get("history") or []
+    m1_rows = (macro_obs.get("M1") or {}).get("history") or []
+    velocity_rows = (macro_obs.get("V_M1") or {}).get("history") or []
+    if not all((profit_rows, gdp_rows, m1_rows, velocity_rows)):
+        return []
+    profit_map = {str(r.get("date", ""))[:10]: _finite(r.get("value")) for r in profit_rows}
+    gdp_map = {str(r.get("date", ""))[:10]: _finite(r.get("value")) for r in gdp_rows}
+    common_dates = sorted(set(profit_map).intersection(gdp_map))
+    result: list[dict[str, Any]] = []
+    for dt in common_dates:
+        profit = profit_map.get(dt)
+        gdp = gdp_map.get(dt)
+        if profit is None or gdp is None or gdp <= 0:
+            continue
+        m1 = _latest_row_on_or_before(m1_rows, dt)
+        velocity = _latest_row_on_or_before(velocity_rows, dt)
+        if m1 is None or velocity is None:
+            continue
+        # Restrict carry-back alignment to 100 days: the source series are
+        # monthly/quarterly. This prevents an ancient observation being treated
+        # as contemporaneous after a source outage.
+        try:
+            if (date.fromisoformat(dt) - date.fromisoformat(m1["date"])).days > 100:
+                continue
+            if (date.fromisoformat(dt) - date.fromisoformat(velocity["date"])).days > 100:
+                continue
+        except Exception:
+            continue
+        alpha = profit / gdp
+        m1_value = _finite(m1.get("value"))
+        velocity_value = _finite(velocity.get("value"))
+        if m1_value is None or velocity_value is None or m1_value <= 0 or velocity_value <= 0:
+            continue
+        if not math.isfinite(alpha) or alpha < 0 or alpha > 1:
+            continue
+        numerator = alpha * m1_value * velocity_value
+        if not math.isfinite(numerator) or numerator < 0:
+            continue
+        result.append({
+            "date": dt,
+            "value": numerator,
+            "alpha_proxy": alpha,
+            "M1": m1_value,
+            "V": velocity_value,
+            "corporate_profit_after_tax": profit,
+            "nominal_gdp": gdp,
+            "M1_observation_date": m1["date"],
+            "V_observation_date": velocity["date"],
+            "source": "FRED CPATAX / GDP + M1SL + M1V; alpha is an operational proxy",
+        })
+    return result
+
+
 def _macro_model_values(macro_obs: dict[str, Any]) -> dict[str, Any]:
-    """Common-date M/V/P/Q and transparent corporate-profit-share alpha proxy."""
+    """Common-date M/V/P/Q and transparent corporate-profit-share alpha proxy.
+
+    The Fisher numerator history is computed independently from P/Q; missing
+    unrelated variables must not suppress a valid alpha*M1*V time series.
+    """
+    numerator_history = _build_alpha_m1_v_history(macro_obs)
+    latest_num = numerator_history[-1] if numerator_history else {}
     keys = ("M1", "V_M1", "P_GDP_DEFLATOR", "Q_REAL_GDP", "CORPORATE_PROFIT_AFTER_TAX", "NOMINAL_GDP")
     series = {k: (macro_obs.get(k) or {}).get("history") or [] for k in keys}
     if any(not rows for rows in series.values()):
-        return {"as_of_date": None, "alpha_proxy": None, "M1": None, "V": None, "P": None, "Q": None,
-                "A_over_M_objective": None, "A_over_M_buyer": None, "source_status": "PARTIAL_MACRO_SERIES",
-                "source_notes": "M1/V/P/Q 或企业利润/GDP 序列不齐。"}
+        return {"as_of_date": latest_num.get("date"), "alpha_proxy": latest_num.get("alpha_proxy"),
+                "alpha_definition": "企业税后利润 CPATAX / 名义 GDP；透明公开数据代理，不等同于理论 α 的直接观测",
+                "M1": latest_num.get("M1"), "M1_date": latest_num.get("M1_observation_date"),
+                "V": latest_num.get("V"), "V_date": latest_num.get("V_observation_date"),
+                "P": None, "P_date": None, "Q": None, "Q_date": None,
+                "corporate_profit_after_tax": latest_num.get("corporate_profit_after_tax"),
+                "nominal_gdp": latest_num.get("nominal_gdp"),
+                "numerator_alpha_M1_V": latest_num.get("value"), "numerator_history": numerator_history,
+                "A_over_M_objective": None, "A_over_M_buyer": None,
+                "source_status": "PARTIAL_MACRO_SERIES",
+                "source_notes": "α×M1×V 历史序列独立计算；P/Q 相关字段缺失，不影响分子趋势。"}
     # Match CPATAX and GDP on a common quarter, then use no later observation for other series.
     common = sorted(set(r["date"] for r in series["CORPORATE_PROFIT_AFTER_TAX"]) & set(r["date"] for r in series["NOMINAL_GDP"]))
     other_latest = min(series[k][-1]["date"] for k in ("M1", "V_M1", "P_GDP_DEFLATOR", "Q_REAL_GDP"))
     eligible = [d for d in common if d <= other_latest]
     if not eligible:
-        return {"as_of_date": None, "alpha_proxy": None, "M1": None, "V": None, "P": None, "Q": None,
-                "A_over_M_objective": None, "A_over_M_buyer": None, "source_status": "NO_COMMON_OBSERVATIONS",
-                "source_notes": "企业利润与 GDP 没有共同季度观测日期。"}
+        return {"as_of_date": latest_num.get("date"), "alpha_proxy": latest_num.get("alpha_proxy"),
+                "alpha_definition": "企业税后利润 CPATAX / 名义 GDP；透明公开数据代理，不等同于理论 α 的直接观测",
+                "M1": latest_num.get("M1"), "M1_date": latest_num.get("M1_observation_date"),
+                "V": latest_num.get("V"), "V_date": latest_num.get("V_observation_date"), "P": None, "P_date": None,
+                "Q": None, "Q_date": None, "numerator_alpha_M1_V": latest_num.get("value"),
+                "numerator_history": numerator_history, "A_over_M_objective": None, "A_over_M_buyer": None,
+                "source_status": "NO_COMMON_OBSERVATIONS", "source_notes": "P/Q 的共同期序列不齐；独立分子历史仍保留。"}
     as_of = eligible[-1]
     obs = {k: _latest_row_on_or_before(v, as_of) for k, v in series.items()}
     if any(obs[k] is None for k in keys):
-        return {"as_of_date": as_of, "alpha_proxy": None, "M1": None, "V": None, "P": None, "Q": None,
-                "A_over_M_objective": None, "A_over_M_buyer": None, "source_status": "NO_COMMON_OBSERVATIONS",
-                "source_notes": "找不到共同可用的宏观观测日期。"}
+        return {"as_of_date": latest_num.get("date") or as_of, "alpha_proxy": latest_num.get("alpha_proxy"),
+                "alpha_definition": "企业税后利润 CPATAX / 名义 GDP；透明公开数据代理，不等同于理论 α 的直接观测",
+                "M1": latest_num.get("M1"), "M1_date": latest_num.get("M1_observation_date"),
+                "V": latest_num.get("V"), "V_date": latest_num.get("V_observation_date"), "P": None, "P_date": None,
+                "Q": None, "Q_date": None, "numerator_alpha_M1_V": latest_num.get("value"),
+                "numerator_history": numerator_history, "A_over_M_objective": None, "A_over_M_buyer": None,
+                "source_status": "NO_COMMON_OBSERVATIONS", "source_notes": "找不到共同日期；保留独立分子历史序列。"}
     profit = float(obs["CORPORATE_PROFIT_AFTER_TAX"]["value"])
     gdp = float(obs["NOMINAL_GDP"]["value"])
     alpha = profit / gdp if gdp > 0 else None
@@ -976,6 +1112,8 @@ def _macro_model_values(macro_obs: dict[str, Any]) -> dict[str, Any]:
             "nominal_gdp": gdp, "nominal_gdp_date": obs["NOMINAL_GDP"]["date"],
             "M1_unit": "USD billions (10^9 USD)", "V_unit": "dimensionless ratio", "P_unit": "GDP deflator index (2017=100)", "Q_unit": "Billions of chained 2017 USD, SAAR",
             "A_over_M_objective": None, "A_over_M_buyer": None,
+            "numerator_alpha_M1_V": latest_num.get("value"),
+            "numerator_history": numerator_history,
             "source_status": "READY" if alpha is not None else "ALPHA_PROXY_INVALID",
             "source_notes": "M1、V、P、Q 来自 FRED；α 以企业税后利润/GDP作为操作性代理，界面将明确标注。"}
 
@@ -987,15 +1125,20 @@ def _build_objective_gravity_history(cape_rows: list[dict[str, Any]], real_yield
         obs_date = str(cap.get("date", ""))[:10]
         if cape_value is None or cape_value <= 0 or not obs_date:
             continue
+        # Objective ERP is defined as log(1 + 1/CAPE) - real risk-free rate.
+        # Therefore R_y* = real_rf + ERP - g simplifies exactly to
+        # log(1 + 1/CAPE) - g. Do not block R_y* merely because DFII10 is
+        # unavailable; the risk-free rate is algebraically cancelled. We still
+        # report the real yield separately when available for auditability.
         y = _latest_real_yield_known(real_yield_rows, obs_date)
         g = _growth_at_date(cape_rows, obs_date)
-        if y is None or g is None:
+        if g is None:
             continue
-        erp = math.log1p(1.0 / cape_value) * 100.0 - y
-        r = y + erp - g
+        erp = math.log1p(1.0 / cape_value) * 100.0 - y if y is not None else None
+        r = math.log1p(1.0 / cape_value) * 100.0 - g
         rows.append({"date": obs_date, "value": r, "erp_objective_pct": erp,
                      "g_objective_pct": g, "real_yield_pct": y,
-                     "source": "Shiller CAPE + FRED DFII10 + trailing real-earnings growth"})
+                     "source": "Shiller CAPE + trailing 10Y real-earnings CAGR; R_y*=ln(1+1/CAPE)-g"})
     return rows
 
 
@@ -1032,10 +1175,14 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
     objective_yield_row = _latest_row_on_or_before(real_yield.get("history") or [], cape_asof) if cape_asof else None
     objective_yield = objective_yield_row.get("value") if objective_yield_row else y10_real
     objective_yield_date = objective_yield_row.get("date") if objective_yield_row else (real_yield.get("date") if real_yield else None)
-    if cape_latest is not None and objective_yield is not None:
-        obj_erp = math.log1p(1.0 / cape_latest) * 100.0 - objective_yield
+    if cape_latest is not None:
+        # Keep ERP decomposition when real yield is available, but compute the
+        # objective R directly from the algebraically equivalent simplified
+        # formula. This makes the objective chain robust to DFII10 outages.
+        if objective_yield is not None:
+            obj_erp = math.log1p(1.0 / cape_latest) * 100.0 - objective_yield
         if obj_g is not None:
-            r_obj = objective_yield + obj_erp - obj_g
+            r_obj = math.log1p(1.0 / cape_latest) * 100.0 - obj_g
     buyer = raw.get("buyer") or {}
     summary = buyer.get("summary") or {}
     erp_buyer = _finite(summary.get("buyer_erp_pct"))
@@ -1084,6 +1231,7 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
     theta_history = [{"date": x["signal_date"], "value": x["Theta"],
                       "source_observation_date": x["buyer_observation_date"]}
                      for x in matched_buyer_history if x.get("Theta") is not None]
+    alpha_m1_v_history = macro_model.get("numerator_history") or []
     latest_verified_gravity = matched_buyer_history[-1] if matched_buyer_history else None
     latest_verified_age_days = None
     if latest_verified_gravity:
@@ -1109,16 +1257,30 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
                 buyer_status = "RISK_FREE_YIELD_UNAVAILABLE"
     else:
         buyer_status = "NOT_STARTED"
-    if macro_model.get("alpha_proxy") is not None and macro_model.get("M1") is not None and macro_model.get("V") is not None:
+    if macro_model.get("numerator_alpha_M1_V") is not None:
+        numerator = macro_model["numerator_alpha_M1_V"]
+        macro_model["numerator_alpha_M1_V"] = numerator
+        macro_model["numerator_history_count"] = len(alpha_m1_v_history)
+        # The user's R_objective definition requires trailing-ten-year realized
+        # ERP and realized g. Until that historical objective chain is wired,
+        # never divide by the legacy CAPE shortcut and label it objective A/M.
+        macro_model["A_over_M_objective"] = None
+        macro_model["A_over_M_objective_status"] = "BLOCKED_UNTIL_TRAILING_10Y_REALIZED_ERP_G"
+        macro_model["A_over_M_buyer"] = numerator / (r_buyer / 100.0) if r_buyer is not None and r_buyer > 0 else None
+        macro_model["A_over_M_unit"] = "USD billions (10^9 USD; model-implied capitalization proxy, not a dimensionless ratio)"
+        macro_model["A_over_M_formula"] = "(alpha_proxy_fraction * M1_USD_billions * V) / (R_percent/100); R must be positive; output unit USD billions"
+    elif macro_model.get("alpha_proxy") is not None and macro_model.get("M1") is not None and macro_model.get("V") is not None:
         numerator = macro_model["alpha_proxy"] * macro_model["M1"] * macro_model["V"]
         macro_model["numerator_alpha_M1_V"] = numerator
-        macro_model["A_over_M_objective"] = numerator / (r_obj / 100.0) if r_obj is not None and r_obj > 0 else None
+        macro_model["numerator_history_count"] = len(alpha_m1_v_history)
+        macro_model["A_over_M_objective"] = None
+        macro_model["A_over_M_objective_status"] = "BLOCKED_UNTIL_TRAILING_10Y_REALIZED_ERP_G"
         macro_model["A_over_M_buyer"] = numerator / (r_buyer / 100.0) if r_buyer is not None and r_buyer > 0 else None
         macro_model["A_over_M_unit"] = "USD billions (10^9 USD; model-implied capitalization proxy, not a dimensionless ratio)"
         macro_model["A_over_M_formula"] = "(alpha_proxy_fraction * M1_USD_billions * V) / (R_percent/100); R must be positive; output unit USD billions"
     index_meta = INDEXES.get(index, INDEXES["SP500"])
     return {
-        "ok": True, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.45-DATA-UNITS-FIX",
+        "ok": True, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.51-AM-NUMERATOR-HISTORY",
         "as_of": _now_utc(), "requested_index": index, "index_name": index_meta["name"], "index_symbol": index_meta["symbol"],
         "metrics": {
             "buffett_indicator_pct_gdp": round(bvalue, 3) if bvalue is not None else None,
@@ -1142,6 +1304,9 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
             "V_M1_velocity": macro_model.get("V"), "V_observation_date": macro_model.get("V_date"),
             "P_GDP_deflator": macro_model.get("P"), "P_observation_date": macro_model.get("P_date"),
             "Q_real_gdp_billions": macro_model.get("Q"), "Q_observation_date": macro_model.get("Q_date"),
+            "numerator_alpha_M1_V_billions": round(macro_model["numerator_alpha_M1_V"], 4) if macro_model.get("numerator_alpha_M1_V") is not None else None,
+            "numerator_alpha_M1_V_date": alpha_m1_v_history[-1]["date"] if alpha_m1_v_history else None,
+            "alpha_M1_V_history_count": len(alpha_m1_v_history),
             "A_over_M_objective_billions": round(macro_model["A_over_M_objective"], 4) if macro_model.get("A_over_M_objective") is not None else None,
             "A_over_M_buyer_billions": round(macro_model["A_over_M_buyer"], 4) if macro_model.get("A_over_M_buyer") is not None else None,
             "A_over_M_unit": macro_model.get("A_over_M_unit"), "A_over_M_source_status": macro_model.get("source_status"),
@@ -1197,19 +1362,20 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
                    "cape": cape_hist,
                    "R_objective": r_objective_history,
                    "R_actual": r_actual_history,
-                   "theta": theta_history},
+                   "theta": theta_history,
+                   "alpha_M1_V": [{"date": r["date"], "value": r["value"], "alpha_proxy": r.get("alpha_proxy"), "M1": r.get("M1"), "V": r.get("V"), "corporate_profit_after_tax": r.get("corporate_profit_after_tax"), "nominal_gdp": r.get("nominal_gdp")} for r in alpha_m1_v_history]},
         "buyer_source": {k: v for k, v in buyer.items() if k not in {"records"}},
         "errors": raw.get("errors", []),
         "data_semantics": {
             "buffett": "US total corporate equity value / annualized nominal GDP; the latest value is updated daily using the S&P 500 as a scaling proxy.",
             "cape": "Official Shiller S&P 500 CAPE; not an index-specific Nasdaq/Dow CAPE.",
-            "objective_erp": "100*ln(1+1/CAPE)-10Y real yield, percentage points.",
+            "objective_erp": "100*ln(1+1/CAPE)-10Y real yield, percentage points, when real yield is available.",
             "objective_g": "Trailing ten-year real earnings CAGR, backward-looking objective proxy.",
-            "R_objective": "real 10Y yield + objective ERP - objective g.",
+            "R_objective": "100*ln(1+1/CAPE)-objective g; algebraically equals real 10Y yield + objective ERP - objective g under the defined objective ERP. R_objective does not require DFII10 availability because real yield cancels.",
             "buyer": "Only explicit ERP or same-row equity-minus-cash expectation and explicitly forward-looking g fields with matching return basis/horizon qualify. Historical/observed growth is not relabelled as an expectation.",
             "M1_V_P_Q": "FRED M1SL, M1V, GDPDEF and GDPC1 are aligned to a common as-of date. alpha proxy = CPATAX/GDP; this is an explicitly labelled operational proxy, not a direct observation of the theoretical alpha.",
             "date_matching": "当前 Theta 只用实际回报口径、约 10 年期限的 ERP/g，机构数据不超过 180 天且观测日与 CAPE 相差不超过 45 天；历史回测按观测日+30天保守可用日期，并只用同口径、同期限、无未来信息的配对。",
-            "A_over_M": "(alpha_proxy * M1 * V) / (R/100); A/M is suppressed if R<=0 or an input is missing; result is a USD-billions proxy capitalization, not a price target.",
+            "A_over_M": "Numerator alpha*M1*V is calculated quarterly from FRED CPATAX/GDP, M1SL, and M1V, aligned to a common historical date; plotted independently even if P/Q or R are unavailable. Monetary units are USD billions internally and displayed as T when >= 1000 billion. alpha remains an operational proxy, not a directly observed theoretical parameter. Complete historical A/M must only be joined after the specified R-objective ten-year realized ERP/g series is implemented.",
             "Theta": "Theta = R_objective / R_actual. If |R_actual| < 0.25 percentage points, Theta is suppressed. A negative R_actual / Theta is a negative-gravity warning candidate, not automatic proof of a bubble.",
             "no_manual_inputs": True,
         },
@@ -1231,7 +1397,7 @@ def automatic_dashboard(index: str = "SP500", force: bool = False) -> dict[str, 
         return _metrics_bundle(idx, raw)
     except Exception as exc:
         buyer = _get_buyer_status(start_if_missing=True)
-        return {"ok": False, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.45-DATA-UNITS-FIX",
+        return {"ok": False, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.51-AM-NUMERATOR-HISTORY",
                 "requested_index": idx, "status": "SOURCE_ERROR", "message": "自动指标源暂不可用，正在保留可追溯的错误信息；不需要也不允许手动填数。",
                 "error": str(exc)[:300], "buyer_source": {k:v for k,v in buyer.items() if k != "records"},
                 "sources": [{"name":"Mendeley institutional expectations", "url": MENDELEY_DATASET_URL}]}
