@@ -70,7 +70,7 @@ FRED_SERIES = {
 }
 TTL_SECONDS = int(os.getenv("AEL_GRAVITY_CACHE_TTL", "21600"))
 _HTTP = requests.Session()
-_HTTP.headers.update({"User-Agent": "Mozilla/5.0 (compatible; AELResearch/2.6.55; +https://github.com/)"})
+_HTTP.headers.update({"User-Agent": "Mozilla/5.0 (compatible; AELResearch/2.6.57; +https://github.com/)"})
 _LOCK = threading.RLock()
 _BUYER_LOCK = threading.Lock()
 _CACHE: dict[str, dict[str, Any]] = {}
@@ -273,27 +273,69 @@ def _read_shiller_bytes(blob: bytes) -> list[dict[str, Any]]:
 
 
 def _cape_history(force: bool = False) -> list[dict[str, Any]]:
+    """Load Shiller monthly history, prioritizing fields required by objective R.
+
+    The old flow accepted a CAPE-only community JSON mirror first. That mirror does
+    not carry monthly price/dividend/nominal EPS, so R_objective silently ended up
+    with zero points although CAPE itself looked healthy. Only a full official
+    P/D/E series is preferred; CAPE-only sources remain an explicit fallback.
+    """
     key = "shiller:cape"
-    with _LOCK:
-        cached = _CACHE.get(key)
-        if cached and not force and time.time() - cached["ts"] < TTL_SECONDS:
-            return cached["value"]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     disk = CACHE_DIR / "shiller_cape.json"
     old: list[dict[str, Any]] = []
+
+    def has_objective_inputs(rows: list[dict[str, Any]]) -> bool:
+        full = [r for r in rows if _finite(r.get("price")) is not None
+                and _finite(r.get("nominal_earnings")) is not None
+                and float(r.get("nominal_earnings") or 0) > 0]
+        return len(full) >= 121
+
+    cached_rows: list[dict[str, Any]] = []
+    with _LOCK:
+        cached = _CACHE.get(key)
+        if cached:
+            cached_rows = cached.get("value") or []
+            if not force and time.time() - cached.get("ts", 0) < TTL_SECONDS and has_objective_inputs(cached_rows):
+                return cached_rows
     if disk.exists():
         try:
             payload = json.loads(disk.read_text(encoding="utf-8"))
-            old = payload.get("rows", [])
-            if not force and time.time() - float(payload.get("cached_at_epoch", 0)) < TTL_SECONDS:
+            disk_rows = payload.get("rows", [])
+            if isinstance(disk_rows, list):
+                old = disk_rows
+            cached_at = float(payload.get("cached_at_epoch", 0))
+            if not cached_rows:
+                cached_rows = old
+            # A fresh CAPE-only cache may supply valuation UI, but it cannot short-circuit
+            # official-source retrieval because objective R requires P and nominal E.
+            if not force and time.time() - cached_at < TTL_SECONDS and has_objective_inputs(old):
                 with _LOCK:
-                    _CACHE[key] = {"ts": float(payload.get("cached_at_epoch", time.time())), "value": old}
+                    _CACHE[key] = {"ts": cached_at, "value": old}
                 return old
         except Exception:
-            old = []
+            old = cached_rows or []
+
     errors = []
-    # First fallback: independently maintained JSON mirror of Robert Shiller's
-    # public monthly dataset. It is parsed by named fields, not fixed column offsets.
+    # First obtain the official Shiller workbook: it is the only configured source
+    # that contains the required monthly P, D and nominal E columns together.
+    for url in SHILLER_URLS:
+        try:
+            response = _HTTP.get(url, timeout=(8, 24))
+            response.raise_for_status()
+            rows = _read_shiller_bytes(response.content)
+            if not has_objective_inputs(rows):
+                raise ValueError("官方工作簿未同时解析出至少 121 个 P 与名义 E 月度观测")
+            payload = {"source_url": url, "cached_at": _now_utc(), "cached_at_epoch": time.time(), "rows": rows}
+            disk.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with _LOCK:
+                _CACHE[key] = {"ts": time.time(), "value": rows}
+            return rows
+        except Exception as exc:
+            errors.append(f"Shiller official {url}: {str(exc)[:140]}")
+
+    # CAPE-only community mirror remains a fallback for CAPE display only; this code
+    # intentionally does not invent P/dividends/E from CAPE or real earnings.
     mirror_url = "https://adambnash-afk.github.io/shiller-data/data/stock_market_data.json"
     try:
         response = _HTTP.get(mirror_url, timeout=(6, 16))
@@ -303,88 +345,59 @@ def _cape_history(force: bool = False) -> list[dict[str, Any]]:
         mirror_rows = []
         for item in data:
             try:
-                year = int(item.get("year"))
-                month = int(item.get("month"))
-                dt = date(year, month, 1)
+                year = int(item.get("year")); month = int(item.get("month")); dt = date(year, month, 1)
             except (TypeError, ValueError):
                 raw_date = _finite(item.get("date"))
                 if raw_date is None:
                     continue
-                year = int(raw_date)
-                month = int(round((raw_date - year) * 100))
-                try:
-                    dt = date(year, month, 1)
-                except ValueError:
-                    continue
+                year = int(raw_date); month = int(round((raw_date - year) * 100))
+                try: dt = date(year, month, 1)
+                except ValueError: continue
             cape = _finite(item.get("cape"))
-            if cape is None or cape <= 0:
-                continue
+            if cape is None or cape <= 0: continue
             mirror_rows.append({"date": dt.isoformat(), "cape": cape,
                 "real_earnings": _finite(item.get("real_earnings")),
                 "real_earnings_growth_10y_pct": None,
-                "source": "Robert Shiller public data via community JSON mirror",
+                "price": None, "dividend": None, "nominal_earnings": None,
+                "source": "Robert Shiller public data via community JSON mirror (CAPE-only fallback; unusable for objective R)",
                 "source_url": mirror_url})
         mirror_rows.sort(key=lambda r: r["date"])
         if len(mirror_rows) >= 120:
-            for row in mirror_rows:
-                if row.get("real_earnings") is None:
-                    continue
-                current = date.fromisoformat(row["date"])
-                target = date(current.year - 10, current.month, 1)
-                prior = [x for x in mirror_rows if x["date"] <= target.isoformat() and x.get("real_earnings") and x["real_earnings"] > 0]
-                if prior and row["real_earnings"] > 0:
-                    base = prior[-1]
-                    years = (current - date.fromisoformat(base["date"])).days / 365.2425
-                    if years >= 9.5:
-                        row["real_earnings_growth_10y_pct"] = ((row["real_earnings"] / base["real_earnings"]) ** (1 / years) - 1) * 100
             disk.write_text(json.dumps({"source_url": mirror_url, "cached_at": _now_utc(), "cached_at_epoch": time.time(), "rows": mirror_rows}, ensure_ascii=False), encoding="utf-8")
-            with _LOCK:
-                _CACHE[key] = {"ts": time.time(), "value": mirror_rows}
+            with _LOCK: _CACHE[key] = {"ts": time.time(), "value": mirror_rows}
             return mirror_rows
         errors.append("Shiller JSON mirror: insufficient valid monthly rows")
     except Exception as exc:
-        errors.append(f"Shiller JSON mirror: {str(exc)[:120]}")
-    for url in SHILLER_URLS:
-        try:
-            response = _HTTP.get(url, timeout=(6, 16))
-            response.raise_for_status()
-            rows = _read_shiller_bytes(response.content)
-            payload = {"source_url": url, "cached_at": _now_utc(), "cached_at_epoch": time.time(), "rows": rows}
-            disk.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            with _LOCK:
-                _CACHE[key] = {"ts": time.time(), "value": rows}
-            return rows
-        except Exception as exc:
-            errors.append(f"{url}: {str(exc)[:120]}")
-    if old:
-        with _LOCK:
-            _CACHE[key] = {"ts": time.time(), "value": old}
-        return old
-    # Live-page fallback: still external/source-attributed, never hardcode a value.
+        errors.append(f"Shiller JSON mirror: {str(exc)[:140]}")
+
+    # Multpl can keep the CAPE tile alive when all richer sources fail, but also cannot
+    # be used to construct R_objective.
     try:
         response = _HTTP.get("https://www.multpl.com/shiller-pe/table/by-month", timeout=(5, 12))
         response.raise_for_status()
         rows = []
         for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", response.text, re.I | re.S):
             cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.I | re.S)
-            if len(cells) < 2:
-                continue
+            if len(cells) < 2: continue
             clean = [re.sub(r"<[^>]+>", "", x).replace("&nbsp;", " ").strip() for x in cells]
-            dt = _parse_shiller_date(clean[0])
-            val = _finite(re.sub(r"[$,\s]", "", clean[1]))
+            dt = _parse_shiller_date(clean[0]); val = _finite(re.sub(r"[$,\s]", "", clean[1]))
             if dt and val and val > 0:
                 rows.append({"date": dt.isoformat(), "cape": val, "real_earnings": None,
-                             "real_earnings_growth_10y_pct": None, "source": "Multpl CAPE history fallback",
-                             "source_url": "https://www.multpl.com/shiller-pe/table/by-month"})
+                    "real_earnings_growth_10y_pct": None, "price": None, "dividend": None,
+                    "nominal_earnings": None, "source": "Multpl CAPE history fallback (not usable for objective R)",
+                    "source_url": "https://www.multpl.com/shiller-pe/table/by-month"})
         if len(rows) >= 120:
             rows.sort(key=lambda r: r["date"])
             disk.write_text(json.dumps({"source_url": rows[-1]["source_url"], "cached_at": _now_utc(), "cached_at_epoch": time.time(), "rows": rows}, ensure_ascii=False), encoding="utf-8")
-            with _LOCK:
-                _CACHE[key] = {"ts": time.time(), "value": rows}
+            with _LOCK: _CACHE[key] = {"ts": time.time(), "value": rows}
             return rows
     except Exception as exc:
-        errors.append(f"Multpl fallback: {str(exc)[:120]}")
-    raise RuntimeError("CAPE 历史数据源不可用；" + "；".join(errors))
+        errors.append(f"Multpl fallback: {str(exc)[:140]}")
+
+    if old and len(old) >= 120:
+        with _LOCK: _CACHE[key] = {"ts": time.time(), "value": old}
+        return old
+    raise RuntimeError("Shiller CAPE 历史源不可用；" + "；".join(errors))
 
 
 def _yahoo_history(symbol: str, start: date = date(1950, 1, 1), force: bool = False) -> list[dict[str, Any]]:
@@ -833,6 +846,63 @@ def _extract_institution_records(path: Path) -> dict[str, Any]:
                        "已解析部分机构数据，但 ERP/g 的预测期限、回报口径或前瞻增长字段不完整；不会生成不合格 Theta。"}
 
 
+
+def _discover_mendeley_public_download_urls(page_html: str) -> list[str]:
+    """Extract public file download candidates from the public dataset landing page.
+
+    The new Mendeley Data API requires OIDC/OAuth (old unauthenticated calls return
+    401). This fallback only follows candidates embedded on the public dataset page;
+    the caller validates that the response is a real ZIP before accepting it.
+    """
+    from html import unescape
+    html = unescape(page_html or "")
+    urls: list[str] = []
+    pattern = r"(?:href|url|downloadUrl|download_url)\s*[=:]\s*['\"]([^'\"]+)['\"]"
+    for match in re.finditer(pattern, html, re.I):
+        raw = match.group(1).replace("\\/", "/")
+        if any(token in raw.lower() for token in ("download", ".zip", "public-files", "file_downloaded")):
+            if raw.startswith("/"):
+                raw = "https://data.mendeley.com" + raw
+            if raw.startswith("https://") and "xtx7tg6jpx" in raw:
+                urls.append(raw)
+    filename = "Dahlquist_Ibert_replication_JFE-lkATwi.zip"
+    for found in re.finditer(re.escape(filename), html, re.I):
+        context = html[max(0, found.start()-3000):min(len(html), found.end()+3000)]
+        for match in re.finditer(r"(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", context):
+            fid = match.group(1)
+            urls.extend([
+                f"https://data.mendeley.com/public-files/datasets/xtx7tg6jpx/files/{fid}/file_downloaded?version=2",
+                f"https://data.mendeley.com/public-files/datasets/xtx7tg6jpx/files/{fid}?download=1",
+            ])
+    for fid in re.findall(r"(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", html)[:30]:
+        urls.append(f"https://data.mendeley.com/public-files/datasets/xtx7tg6jpx/files/{fid}/file_downloaded?version=2")
+    return list(dict.fromkeys(urls))
+
+
+def _download_mendeley_public_page_zip() -> requests.Response:
+    """Try the user-facing public download path when the API returns 401."""
+    page = _HTTP.get(MENDELEY_DATASET_URL, timeout=(8, 25), headers={"Accept": "text/html,application/xhtml+xml"})
+    page.raise_for_status()
+    candidates = _discover_mendeley_public_download_urls(page.text)
+    if not candidates:
+        raise RuntimeError("公开数据页未暴露可识别的 ZIP/文件 UUID；Mendeley API 需要 OIDC OAuth")
+    failures = []
+    for url in candidates[:40]:
+        try:
+            resp = _HTTP.get(url, timeout=(10, 120), stream=True, allow_redirects=True,
+                             headers={"Referer": MENDELEY_DATASET_URL, "Accept": "application/zip,application/octet-stream,*/*"})
+            resp.raise_for_status()
+            ctype = str(resp.headers.get("content-type", "")).lower()
+            if "text/html" in ctype or "application/json" in ctype:
+                resp.close()
+                failures.append(f"{url}: 返回 {ctype or '文本'}")
+                continue
+            return resp
+        except Exception as exc:
+            failures.append(f"{url}: {str(exc)[:90]}")
+    raise RuntimeError("公开页面候选下载均失败：" + "；".join(failures[:4]))
+
+
 def _download_institution_archive() -> dict[str, Any]:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if SOURCE_ARCHIVE.exists() and zipfile.is_zipfile(SOURCE_ARCHIVE):
@@ -859,12 +929,21 @@ def _download_institution_archive() -> dict[str, Any]:
             response.raise_for_status()
         else:
             redirect_url = "https://api.data.mendeley.com/datasets/xtx7tg6jpx/zip/file_downloaded?version=2"
-            response = _HTTP.get(redirect_url, timeout=(10, 120), stream=True, allow_redirects=True)
-            response.raise_for_status()
-            content_type = str(response.headers.get("content-type", "")).lower()
-            if "json" in content_type or "text/html" in content_type:
-                preview = response.text[:240] if hasattr(response, "text") else "non-binary response"
-                raise RuntimeError(f"Mendeley ZIP 仍未可下载（metadata={str(meta)[:160]}；redirect={preview}）")
+            try:
+                response = _HTTP.get(redirect_url, timeout=(10, 35), stream=True, allow_redirects=True)
+                response.raise_for_status()
+                content_type = str(response.headers.get("content-type", "")).lower()
+                if "json" in content_type or "text/html" in content_type:
+                    response.close()
+                    raise RuntimeError(f"Mendeley API 返回非 ZIP 内容：{content_type}")
+            except Exception as api_exc:
+                try:
+                    response = _download_mendeley_public_page_zip()
+                except Exception as page_exc:
+                    raise RuntimeError(
+                        f"机构研究原始数据下载失败：Mendeley Data API 要求 OIDC/OAuth，接口响应 {str(api_exc)[:120]}；"
+                        f"公开页面备用下载也失败：{str(page_exc)[:220]}。未伪造机构记录。"
+                    ) from page_exc
         temp = SOURCE_ARCHIVE.with_suffix(".part")
         total = 0
         with temp.open("wb") as stream:
@@ -1361,7 +1440,7 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
         macro_model["A_over_M_formula"] = "(alpha_proxy_fraction * M1_USD_billions * V) / (R_percent/100); R must be positive; output unit USD billions"
     index_meta = INDEXES.get(index, INDEXES["SP500"])
     return {
-        "ok": True, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.55-CROSS-COUNTRY-LONG-R-TRENDS",
+        "ok": True, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.57-COUNTRY-THEORY-DATA-QUALITY",
         "as_of": _now_utc(), "requested_index": index, "index_name": index_meta["name"], "index_symbol": index_meta["symbol"],
         "metrics": {
             "buffett_indicator_pct_gdp": round(bvalue, 3) if bvalue is not None else None,
@@ -1432,7 +1511,12 @@ def _metrics_bundle(index: str, raw: dict[str, Any]) -> dict[str, Any]:
         "sources": [
             {"name": "World Bank listed domestic market capitalization / GDP (annual)", "url": "https://data.worldbank.org/indicator/CM.MKT.LCAP.GD.ZS?locations=US", "available": bool(bhistory) and buffett.get("frequency") == "annual", "last_observation": bhistory[-1]["date"] if bhistory else None},
             {"name": "FRED Z.1 corporate-equity liabilities/GDP (proxy; not canonical Buffett indicator)", "url": "https://fred.stlouisfed.org/series/NCBEILQ027S", "available": False, "last_observation": None, "status": "仅诊断，不参与巴菲特指标展示"},
-            {"name": "Robert Shiller official CAPE data", "url": cape_row.get("source_url") if cape_row else SHILLER_URLS[0], "available": bool(cape_rows), "last_observation": cape_row.get("date") if cape_row else None},
+            {"name": "Robert Shiller CAPE monthly data", "url": cape_row.get("source_url") if cape_row else SHILLER_URLS[0], "available": bool(cape_rows), "last_observation": cape_row.get("date") if cape_row else None},
+            {"name": "R客观必需字段：Shiller 月度价格 P + 名义每股盈利 E", "url": SHILLER_URLS[0],
+             "available": sum(1 for x in cape_rows if x.get("price") is not None and x.get("nominal_earnings") is not None and (x.get("nominal_earnings") or 0) > 0) >= 121,
+             "count": sum(1 for x in cape_rows if x.get("price") is not None and x.get("nominal_earnings") is not None and (x.get("nominal_earnings") or 0) > 0),
+             "last_observation": next((x.get("date") for x in reversed(cape_rows) if x.get("price") is not None and x.get("nominal_earnings") is not None), None),
+             "status": "完整 P/D/E 字段决定 R客观能否计算；CAPE-only 不能计算历史 ERP/g"},
             {"name": "FRED 10-year real Treasury yield DFII10 (reference only)", "url": "https://fred.stlouisfed.org/series/DFII10", "available": y10_real is not None, "last_observation": real_yield.get("date") if real_yield else None},
             {"name": "FRED 10-year nominal Treasury yield DGS10 (R_f input)", "url": "https://fred.stlouisfed.org/series/DGS10", "available": y10_nominal is not None, "last_observation": nominal_yield.get("date") if nominal_yield else None},
             {"name": "FRED 3-month Treasury bill TB3MS (realized cash benchmark for ERP)", "url": "https://fred.stlouisfed.org/series/TB3MS", "available": bool(tbill_rows), "last_observation": tbill_yield.get("date") if tbill_yield else None},
@@ -1482,7 +1566,7 @@ def automatic_dashboard(index: str = "SP500", force: bool = False) -> dict[str, 
         return _metrics_bundle(idx, raw)
     except Exception as exc:
         buyer = _get_buyer_status(start_if_missing=True, force_retry=force)
-        return {"ok": False, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.55-CROSS-COUNTRY-LONG-R-TRENDS",
+        return {"ok": False, "module": "AEL_PRO_AUTOMATIC_DOUBLE_GRAVITY", "version": "2.6.57-COUNTRY-THEORY-DATA-QUALITY",
                 "requested_index": idx, "status": "SOURCE_ERROR", "message": "自动指标源暂不可用，正在保留可追溯的错误信息；不需要也不允许手动填数。",
                 "error": str(exc)[:300], "buyer_source": {k:v for k,v in buyer.items() if k != "records"},
                 "sources": [{"name":"Mendeley institutional expectations", "url": MENDELEY_DATASET_URL}]}

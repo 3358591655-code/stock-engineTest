@@ -31,23 +31,23 @@ SPF_INFLATION_URL = "https://www.philadelphiafed.org/-/media/frbp/assets/surveys
 FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 _HTTP = requests.Session()
-_HTTP.headers.update({"User-Agent": "Mozilla/5.0 (compatible; AELResearch/2.6.55; +https://github.com/)"})
+_HTTP.headers.update({"User-Agent": "Mozilla/5.0 (compatible; AELResearch/2.6.57; +https://github.com/)"})
 _LOCK = threading.RLock()
 _CACHE: dict[str, dict[str, Any]] = {}
 
 # Latest World Bank nominal-GDP top-eight baseline plus user-requested Russia
 # and South Korea as explicitly-added markets (GDP ranks change over time).
 COUNTRIES: dict[str, dict[str, Any]] = {
-    "USA": {"name":"美国", "iso2":"US", "wb":"USA", "symbol":"^GSPC", "rf":"DGS10", "cash":"TB3MS", "group":"us", "strict_us":True, "return_label":"Shiller 月度价格+股息总回报", "rf_url":"https://fred.stlouisfed.org/series/DGS10"},
-    "CHN": {"name":"中国", "iso2":"CN", "wb":"CHN", "symbol":"000001.SS", "rf":"IRLTLT01CNM156N", "cash":"IR3TIB01CNM156N", "group":"em", "return_label":"上证综指历史回报代理；指数分红再投资口径未统一", "rf_url":"https://yield.chinabond.com.cn/"},
-    "DEU": {"name":"德国", "iso2":"DE", "wb":"DEU", "symbol":"^GDAXI", "rf":"IRLTLT01DEM156N", "cash":"IR3TIB01DEM156N", "group":"dm_ex_us", "return_label":"DAX Performance 指数（含再投资分红的指数口径）", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01DEM156N"},
-    "JPN": {"name":"日本", "iso2":"JP", "wb":"JPN", "symbol":"^N225", "rf":"IRLTLT01JPM156N", "cash":"IR3TIB01JPM156N", "group":"dm_ex_us", "return_label":"日经225历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01JPM156N"},
-    "IND": {"name":"印度", "iso2":"IN", "wb":"IND", "symbol":"^BSESN", "rf":"INDIRLTLT01STM", "cash":"IRSTCI01INM156N", "group":"em", "return_label":"Sensex 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/INDIRLTLT01STM"},
-    "GBR": {"name":"英国", "iso2":"GB", "wb":"GBR", "symbol":"^FTSE", "rf":"IRLTLT01GBM156N", "cash":"IR3TIB01GBM156N", "group":"dm_ex_us", "return_label":"FTSE 100 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01GBM156N"},
-    "FRA": {"name":"法国", "iso2":"FR", "wb":"FRA", "symbol":"^FCHI", "rf":"IRLTLT01FRM156N", "cash":"IR3TIB01FRM156N", "group":"dm_ex_us", "return_label":"CAC 40 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01FRM156N"},
-    "ITA": {"name":"意大利", "iso2":"IT", "wb":"ITA", "symbol":"FTSEMIB.MI", "rf":"IRLTLT01ITM156N", "cash":"IR3TIB01ITM156N", "group":"dm_ex_us", "return_label":"FTSE MIB 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01ITM156N"},
-    "RUS": {"name":"俄罗斯", "iso2":"RU", "wb":"RUS", "symbol":"IMOEX.ME", "rf":"IRLTLT01RUM156N", "cash":"IR3TIB01RUM156N", "group":"em", "return_label":"MOEX 指数历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01RUM156N", "rf_stale_note":"OECD/FRED 俄罗斯长期利率序列仅到 2018 年，趋势止于最后可靠观测。"},
-    "KOR": {"name":"韩国", "iso2":"KR", "wb":"KOR", "symbol":"^KS11", "rf":"IRLTLT01KRM156N", "cash":"IR3TIB01KRM156N", "group":"em", "return_label":"KOSPI 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01KRM156N"},
+    "USA": {"name":"美国", "iso2":"US", "wb":"USA", "currency":"USD", "symbol":"^GSPC", "rf":"DGS10", "cash":"TB3MS", "group":"us", "strict_us":True, "return_label":"Shiller 月度价格+股息总回报", "rf_url":"https://fred.stlouisfed.org/series/DGS10"},
+    "CHN": {"name":"中国", "iso2":"CN", "wb":"CHN", "currency":"CNY", "symbol":"000001.SS", "rf":"IRLTLT01CNM156N", "cash":"IR3TIB01CNM156N", "group":"em", "return_label":"上证综指历史回报代理；指数分红再投资口径未统一", "rf_url":"https://yield.chinabond.com.cn/"},
+    "DEU": {"name":"德国", "iso2":"DE", "wb":"DEU", "currency":"EUR", "symbol":"^GDAXI", "rf":"IRLTLT01DEM156N", "cash":"IR3TIB01DEM156N", "group":"dm_ex_us", "return_label":"DAX Performance 指数（含再投资分红的指数口径）", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01DEM156N"},
+    "JPN": {"name":"日本", "iso2":"JP", "wb":"JPN", "currency":"JPY", "symbol":"^N225", "rf":"IRLTLT01JPM156N", "cash":"IR3TIB01JPM156N", "group":"dm_ex_us", "return_label":"日经225历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01JPM156N"},
+    "IND": {"name":"印度", "iso2":"IN", "wb":"IND", "currency":"INR", "symbol":"^BSESN", "rf":"INDIRLTLT01STM", "cash":"IRSTCI01INM156N", "group":"em", "return_label":"Sensex 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/INDIRLTLT01STM"},
+    "GBR": {"name":"英国", "iso2":"GB", "wb":"GBR", "currency":"GBP", "symbol":"^FTSE", "rf":"IRLTLT01GBM156N", "cash":"IR3TIB01GBM156N", "group":"dm_ex_us", "return_label":"FTSE 100 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01GBM156N"},
+    "FRA": {"name":"法国", "iso2":"FR", "wb":"FRA", "currency":"EUR", "symbol":"^FCHI", "rf":"IRLTLT01FRM156N", "cash":"IR3TIB01FRM156N", "group":"dm_ex_us", "return_label":"CAC 40 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01FRM156N"},
+    "ITA": {"name":"意大利", "iso2":"IT", "wb":"ITA", "currency":"EUR", "symbol":"FTSEMIB.MI", "rf":"IRLTLT01ITM156N", "cash":"IR3TIB01ITM156N", "group":"dm_ex_us", "return_label":"FTSE MIB 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01ITM156N"},
+    "RUS": {"name":"俄罗斯", "iso2":"RU", "wb":"RUS", "currency":"RUB", "symbol":"IMOEX.ME", "rf":"IRLTLT01RUM156N", "cash":"IR3TIB01RUM156N", "group":"em", "return_label":"MOEX 指数历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01RUM156N", "rf_stale_note":"OECD/FRED 俄罗斯长期利率序列仅到 2018 年，趋势止于最后可靠观测。"},
+    "KOR": {"name":"韩国", "iso2":"KR", "wb":"KOR", "currency":"KRW", "symbol":"^KS11", "rf":"IRLTLT01KRM156N", "cash":"IR3TIB01KRM156N", "group":"em", "return_label":"KOSPI 历史回报代理；指数分红再投资口径未统一", "rf_url":"https://fred.stlouisfed.org/series/IRLTLT01KRM156N"},
 }
 
 
@@ -55,10 +55,10 @@ def country_catalog() -> dict[str, Any]:
     rows=[]
     for code, c in COUNTRIES.items():
         rows.append({"code":code,"name":c["name"],"default":code=="USA",
-                     "group":c["group"],"market_symbol":c["symbol"],
+                     "group":c["group"],"market_symbol":c["symbol"],"currency":c.get("currency","LCU"),
                      "objective_mode":"US_STRICT" if c.get("strict_us") else "CROSS_COUNTRY_PROXY",
                      "rf_source":c.get("rf_url"),"return_basis":c["return_label"]})
-    return {"ok":True,"version":"2.6.55","default_country":"USA","count":len(rows),
+    return {"ok":True,"version":"2.6.57","default_country":"USA","count":len(rows),
             "scope_note":"名义 GDP 前八基准经济体（美国、中国、德国、日本、印度、英国、法国、意大利）+ 指定扩展俄罗斯、韩国；GDP 排名随年份变化。",
             "countries":rows}
 
@@ -136,47 +136,133 @@ def _fetch_wb_indicator(country_code: str, indicator: str, force: bool=False) ->
     _cache_write(key,out);return out
 
 
+def _annualize_last_observation(rows: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
+    """Convert monthly/annual observations to one latest observation per calendar year."""
+    latest: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        d = str(row.get("date") or "")[:10]
+        try:
+            yr = int(d[:4]); date.fromisoformat(d)
+        except Exception:
+            continue
+        value = _finite(row.get("value"))
+        if value is None or value <= 0:
+            continue
+        old = latest.get(yr)
+        if old is None or d > str(old.get("observation_date") or old.get("date") or ""):
+            latest[yr] = {"date": f"{yr}-12-31", "observation_date": d, "year": yr,
+                          "value": value, "source": source}
+    return [latest[y] for y in sorted(latest)]
+
+
+def _fetch_m1_rows(country: dict[str, Any], force: bool = False) -> list[dict[str, Any]]:
+    """Prefer OECD narrow-money series on FRED, then World Bank IMF-IFS M1 proxy.
+
+    OECD series MANMM101{ISO2}M189N is nominal narrow money in local currency.
+    If its local series is missing or stale/empty, never substitute M2: use WDI
+    FM.LBL.MONY.CN only as a separately disclosed fallback.
+    """
+    # FRED mirrors OECD's country IDs as ISO3 (for example MANMM101USA189N).
+    # Do not construct an ISO2+"M" ID: that can resolve to the wrong/empty series.
+    iso3 = str(country.get("wb") or "")
+    errors = []
+    if iso3:
+        series_id = f"MANMM101{iso3}189N"
+        try:
+            rows = _fetch_fred_rows(series_id, force)
+            annual = _annualize_last_observation(rows, f"OECD Main Economic Indicators via FRED {series_id}")
+            if annual:
+                # Keep this source's last observation date in each year to reveal stale series.
+                return annual
+        except Exception as exc:
+            errors.append(f"{series_id}: {str(exc)[:100]}")
+    try:
+        rows = _fetch_wb_indicator(str(country.get("wb") or ""), "FM.LBL.MONY.CN", force)
+        annual = _annualize_last_observation(rows, "World Bank WDI / IMF-IFS FM.LBL.MONY.CN (narrow-money proxy)")
+        if annual:
+            return annual
+    except Exception as exc:
+        errors.append(f"WDI M1: {str(exc)[:100]}")
+    raise RuntimeError("无可核验的本国M1历史序列；未用M2替代。" + ("来源错误：" + "; ".join(errors) if errors else ""))
+
+
 def _make_macro_panel(nominal_rows: list[dict[str,Any]], real_rows: list[dict[str,Any]],
                       deflator_rows: list[dict[str,Any]], m1_rows: list[dict[str,Any]],
                       m2_rows: list[dict[str,Any]], *, frequency: str,
-                      currency_basis: str) -> dict[str,Any]:
-    """Build a source-labelled macro panel; never rename broad money as M1.
+                      currency_basis: str, tax_rows: list[dict[str,Any]] | None = None,
+                      tax_source: str = "World Bank WDI GC.TAX.YPKG.CN") -> dict[str,Any]:
+    """Build theory variables from real public observations; missing values stay missing.
 
-    WDI FM.LBL.MONY.CN is IMF-IFS "Money (current LCU)", often referred to as M1.
-    Cross-country monetary components still follow national definitions, so this is a
-    comparable public proxy series rather than proof every central bank definition is identical.
+    Alpha operational proxy is income/profits/capital-gains tax revenue divided by
+    nominal GDP. This WDI aggregate can include personal as well as corporate taxes,
+    so it is explicitly NOT called a corporate effective tax rate. A true corporate-tax
+    only series can replace it when data are consistently mapped for that country.
     """
-    maps=[]
-    for rows in (nominal_rows,real_rows,deflator_rows,m1_rows,m2_rows):
-        maps.append({int(r["year"]):_finite(r.get("value")) for r in rows if r.get("year") is not None})
-    years=sorted(set().union(*(set(x) for x in maps)))
-    history=[]
+    tax_rows = tax_rows or []
+    input_sets = (nominal_rows, real_rows, deflator_rows, m1_rows, m2_rows, tax_rows)
+    maps = []
+    for rows in input_sets:
+        maps.append({int(r["year"]): _finite(r.get("value")) for r in rows if r.get("year") is not None})
+    m1_dates = {int(r["year"]): str(r.get("observation_date") or r.get("date") or "") for r in m1_rows if r.get("year") is not None}
+    m1_sources = {int(r["year"]): str(r.get("source") or "本国M1公开序列") for r in m1_rows if r.get("year") is not None}
+    years = sorted(set().union(*(set(x) for x in maps)))
+    history = []
     for yr in years:
-        ng,rg,p,m1,m2=(mp.get(yr) for mp in maps)
-        row={"date":f"{yr}-12-31","year":yr,"nominal_gdp_lcu":ng,"real_gdp_lcu":rg,
-             "gdp_deflator_index":p,"M1":m1,"m2_broad_lcu":m2,
-             "V_M1":(ng/m1) if ng is not None and m1 is not None and ng>0 and m1>0 else None,
-             "v_m2_proxy":(ng/m2) if ng is not None and m2 is not None and ng>0 and m2>0 else None,
-             "source_basis":currency_basis,"frequency":frequency}
+        ng, rg, p, m1, m2, tax = (mp.get(yr) for mp in maps)
+        v_m1 = ng / m1 if ng is not None and m1 is not None and ng > 0 and m1 > 0 else None
+        v_m2 = ng / m2 if ng is not None and m2 is not None and ng > 0 and m2 > 0 else None
+        alpha_raw = tax / ng if tax is not None and ng is not None and tax >= 0 and ng > 0 else None
+        # Taxes on income/profits/capital gains as a share of GDP can be a broad proxy,
+        # but values above 50% of GDP almost certainly indicate a series/unit mismatch.
+        alpha = alpha_raw if alpha_raw is not None and 0.0 <= alpha_raw <= 0.50 else None
+        alpha_issue = ("税收/GDP 比例超出 0–50% 合理校验范围，疑似数据/单位不匹配；α和分子已停算。"
+                       if alpha_raw is not None and not (0.0 <= alpha_raw <= 0.50) else None)
+        # User's macro-Fisher analogy uses V=nominal GDP/M2 for these valuation identities.
+        q_over_v = rg / v_m2 if rg is not None and v_m2 is not None and v_m2 > 0 else None
+        m2_over_p = m2 / (p / 100.0) if m2 is not None and p is not None and p > 0 else None
+        one_over_p = 100.0 / p if p is not None and p > 0 else None
+        q_over_m2v = rg / (m2 * v_m2) if rg is not None and m2 is not None and v_m2 is not None and m2 > 0 and v_m2 > 0 else None
+        row = {"date":f"{yr}-12-31", "year":yr, "nominal_gdp_lcu":ng, "real_gdp_lcu":rg,
+               "gdp_deflator_index":p, "M1":m1, "m2_broad_lcu":m2, "alpha_tax_revenue_lcu":tax,
+               "alpha_proxy":alpha, "alpha_raw_ratio":alpha_raw, "alpha_issue":alpha_issue,
+               "alpha_source":tax_source if alpha is not None else None,
+               "M1_observation_date":m1_dates.get(yr), "M1_source":m1_sources.get(yr),
+               "V_M1":v_m1, "v_m2_proxy":v_m2,
+               "alpha_M1_V":alpha * m1 * v_m1 if alpha is not None and m1 is not None and v_m1 is not None else None,
+               "Q_over_V":q_over_v, "M2_over_P":m2_over_p, "one_over_P":one_over_p, "Q_over_M2V":q_over_m2v,
+               "source_basis":currency_basis, "frequency":frequency}
         history.append(row)
-    def last_nonnull(key):return next((r for r in reversed(history) if r.get(key) is not None),None)
-    fields={}
-    for key,label in (("nominal_gdp_lcu","名义GDP（本币现价）"),("real_gdp_lcu","实际GDP（本币不变价）"),
-                      ("gdp_deflator_index","GDP平减指数"),("M1","M1窄口径货币（本币）"),
-                      ("m2_broad_lcu","M2/广义货币（本币）"),("V_M1","名义GDP/M1 流通速度代理"),
-                      ("v_m2_proxy","名义GDP/M2 流通速度代理")):
-        r=last_nonnull(key);fields[key]={"label":label,"available":r is not None,"date":r.get("date") if r else None,"value":r.get(key) if r else None}
-    # No consistent corporate income tax paid / pre-tax corporate profits ratio is
-    # available for all requested countries from the selected free common source set.
-    # Do not disguise total tax/GDP or a statutory tax rate as the theory's alpha.
-    fields["alpha_proxy"]={"label":"α：企业税后利润/GDP","available":False,
-        "reason":"尚无覆盖所有所选国家且定义一致的企业实际税负/税前利润历史序列；不以总税收/GDP或法定税率冒充。"}
-    fields["alpha_M1_V"]={"label":"α×M1×V 分子","available":False,
-        "reason":"M1 与 GDP/M1 速度已取得，但 α 缺少可比的企业实际税负输入，因此不生成虚构分子。"}
-    return {"history":history,"latest":next((r for r in reversed(history) if r.get("nominal_gdp_lcu") is not None),None),
-            "fields":fields,"frequency":frequency,"currency_basis":currency_basis,
-            "warning":"M1 来自 WDI/IMF-IFS 的 Money (current LCU)，不同国家仍可能存在定义/统计制度差异；M2 单独显示。V_M1=名义GDP/M1 是宏观速度代理，不等同于股票流通股换手率。α 缺少统一的企业实际税负/税前利润历史输入时不计算 α×M1×V。指标历史可能修订。"}
 
+    def last_nonnull(key):
+        return next((r for r in reversed(history) if r.get(key) is not None), None)
+    definitions = [
+        ("nominal_gdp_lcu", "名义GDP（本币现价）"), ("real_gdp_lcu", "实际GDP（本币不变价）"),
+        ("gdp_deflator_index", "GDP平减指数"), ("M1", "M1窄口径货币（本币）"),
+        ("m2_broad_lcu", "M2/广义货币（本币）"), ("V_M1", "名义GDP/M1 流通速度代理"),
+        ("v_m2_proxy", "名义GDP/M2 流通速度代理"), ("alpha_tax_revenue_lcu", "所得/利润/资本利得税收入（本币）"),
+        ("alpha_proxy", "α税收强度代理（所得/利润/资本利得税收入÷名义GDP）"),
+        ("alpha_M1_V", "α×M1×V 分子（代理）"), ("Q_over_V", "Q/V 整体估值代理"),
+        ("M2_over_P", "M2/P 整体估值代理"), ("one_over_P", "1/P 普通股价格代理"),
+        ("Q_over_M2V", "Q/(M2V) 普通股价格代理")]
+    fields = {}
+    for key, label in definitions:
+        r = last_nonnull(key)
+        fields[key] = {"label":label,"available":r is not None,"date":(r.get("M1_observation_date") if key == "M1" and r else r.get("date") if r else None),
+                       "value":r.get(key) if r else None}
+        if key == "M1" and r:
+            fields[key]["source"] = r.get("M1_source")
+        if key in {"alpha_proxy", "alpha_M1_V"} and r:
+            fields[key]["definition"] = "广义税收代理；并非企业实际有效税率，税收口径可能包括个人所得税。"
+            fields[key]["source"] = r.get("alpha_source")
+    alpha_row = last_nonnull("alpha_proxy")
+    alpha_problem = next((r.get("alpha_issue") for r in reversed(history) if r.get("alpha_issue")), None)
+    fields["alpha_proxy"]["reason"] = ("当前公开通用序列是所得/利润/资本利得税收入占名义GDP代理，可能包括个人所得税，不能解释为企业有效税率。"
+         if fields["alpha_proxy"]["available"] else (alpha_problem or "该国没有可核验的税收历史，或税收/GDP 比例未通过合理性校验；α与分子不计算。"))
+    fields["alpha_M1_V"]["reason"] = ("使用通过范围校验的税收收入/GDP代理计算；这是研究性宏观代理，并非直接观测的企业抽成参数。"
+         if fields["alpha_M1_V"]["available"] else (alpha_problem or "α、M1或V任一关键输入缺失或未通过合理性校验，不用其他变量替代。"))
+    latest = next((r for r in reversed(history) if r.get("nominal_gdp_lcu") is not None), None)
+    return {"history":history,"latest":latest,"fields":fields,"frequency":frequency,"currency_basis":currency_basis,
+            "warning":"实际GDP采用 WDI NY.GDP.MKTP.KN（本币不变价），避免误把 constant USD 当成本币。M1优先采用OECD/FRED窄口径序列（使用三位国家代码），缺失时退回WDI/IMF-IFS；M2独立显示，不冒充M1。V=名义GDP/M1或/M2为宏观速度代理，不等于股票换手率。α使用所得/利润/资本利得税收入÷GDP作为跨国公开代理，可能包括个人所得税；超过GDP的50%会被判为疑似单位错配并停止计算。数据发布日期与GDP发布滞后有差异，不能视为无前视偏差回测。"}
 
 def _fetch_fred_rows(series_id: str, force: bool=False) -> list[dict[str,Any]]:
     if not series_id: return []
@@ -550,7 +636,7 @@ def country_gravity_history(country_code: str="USA", limit: int=600, force: bool
     code=str(country_code or "USA").upper()
     if code not in COUNTRIES: code="USA"
     c=COUNTRIES[code]; limit=max(12,min(1200,int(limit)))
-    cache_key=f"history_v2655_{code}"
+    cache_key=f"history_v2657_{code}"
     if not force:
         cached=_cache_read(cache_key)
         if cached is not None: return cached
@@ -611,21 +697,26 @@ def country_gravity_history(country_code: str="USA", limit: int=600, force: bool
                 mh=[]
                 for x in macro_dash.get("series") or []:
                     nrow=num_map.get(str(x.get("date"))[:10])
-                    mh.append({"date":x.get("date"),"nominal_gdp_lcu":x.get("GDP_nominal"),"real_gdp_lcu":x.get("Q"),
-                               "gdp_deflator_index":x.get("P_deflator_index"),"m2_broad_lcu":x.get("M2"),"v_m2_proxy":x.get("V"),
+                    q = _finite(x.get("Q")); m2v = _finite(x.get("M2")); pidx = _finite(x.get("P_deflator_index")); vel = _finite(x.get("V"))
+                    qv = q / vel if q is not None and vel is not None and vel > 0 else None
+                    m2p = m2v / (pidx / 100.0) if m2v is not None and pidx is not None and pidx > 0 else None
+                    mh.append({"date":x.get("date"),"nominal_gdp_lcu":x.get("GDP_nominal"),"real_gdp_lcu":q,
+                               "gdp_deflator_index":pidx,"m2_broad_lcu":m2v,"v_m2_proxy":vel,
                                "alpha_proxy":nrow.get("alpha_proxy") if nrow else None,"M1":nrow.get("M1") if nrow else None,
                                "V_M1":nrow.get("V") if nrow else None,"alpha_M1_V":nrow.get("value") if nrow else None,
+                               "alpha_source":"FRED CPATAX / 名义 GDP（美国操作性代理）" if nrow else None,
+                               "Q_over_V":qv,"M2_over_P":m2p,"one_over_P":(100.0/pidx if pidx is not None and pidx > 0 else None),
+                               "Q_over_M2V":(q/(m2v*vel) if q is not None and m2v is not None and vel is not None and m2v > 0 and vel > 0 else None),
+                               "identity_gap_pct":((qv/m2p-1.0)*100.0 if qv is not None and m2p is not None and m2p != 0 else None),
                                "frequency":"季度","source_basis":"USD billions / FRED"})
                 latest_macro=mh[-1] if mh else {}
                 macro_panel={"history":mh,"latest":latest_macro,"frequency":"季度","currency_basis":"USD billions / FRED",
-                             "fields":{"alpha_proxy":{"label":"α=CPATAX/名义GDP代理","available":latest_macro.get("alpha_proxy") is not None},
-                                       "M1":{"label":"M1SL货币存量","available":latest_macro.get("M1") is not None},
-                                       "V_M1":{"label":"M1V流通速度","available":latest_macro.get("V_M1") is not None},
-                                       "alpha_M1_V":{"label":"α×M1×V","available":latest_macro.get("alpha_M1_V") is not None},
-                                       "nominal_gdp_lcu":{"label":"名义GDP","available":latest_macro.get("nominal_gdp_lcu") is not None},
-                                       "real_gdp_lcu":{"label":"实际GDP","available":latest_macro.get("real_gdp_lcu") is not None},
-                                       "gdp_deflator_index":{"label":"GDP平减指数","available":latest_macro.get("gdp_deflator_index") is not None},
-                                       "m2_broad_lcu":{"label":"M2广义货币","available":latest_macro.get("m2_broad_lcu") is not None}},
+                             "fields":{key:{"label":label,"available":latest_macro.get(key) is not None,"value":latest_macro.get(key),"date":latest_macro.get("date")} for key,label in (
+                                       ("alpha_proxy","α=CPATAX/名义 GDP 代理（非企业税专属）"),("M1","FRED M1SL 窄口径货币存量"),
+                                       ("V_M1","FRED M1V 货币流通速度"),("alpha_M1_V","α×M1×V 分子代理"),
+                                       ("nominal_gdp_lcu","名义GDP"),("real_gdp_lcu","实际GDP"),("gdp_deflator_index","GDP平减指数"),
+                                       ("m2_broad_lcu","M2广义货币"),("v_m2_proxy","名义 GDP / M2 速度代理"),
+                                       ("Q_over_V","Q/V 估值代理"),("M2_over_P","M2/P 估值代理"),("one_over_P","1/P 价格代理"),("Q_over_M2V","Q/(M2V) 价格代理"))},
                              "warning":macro_dash.get("warning")}
         except Exception as exc:
             macro_panel={"history":[],"latest":None,"fields":{},"warning":f"美国 FRED 理论变量历史暂不可用：{str(exc)[:140]}"}
@@ -653,10 +744,11 @@ def country_gravity_history(country_code: str="USA", limit: int=600, force: bool
     with ThreadPoolExecutor(max_workers=8) as pool:
         futs={pool.submit(_fetch_yahoo_monthly,c["symbol"],force):"index",
               pool.submit(_fetch_wb_gdp,c["wb"],force):"gdp",
-              pool.submit(_fetch_wb_indicator,c["wb"],"NY.GDP.MKTP.KD",force):"real_gdp",
+              pool.submit(_fetch_wb_indicator,c["wb"],"NY.GDP.MKTP.KN",force):"real_gdp",
               pool.submit(_fetch_wb_indicator,c["wb"],"NY.GDP.DEFL.ZS",force):"deflator",
-              pool.submit(_fetch_wb_indicator,c["wb"],"FM.LBL.MONY.CN",force):"m1",
-              pool.submit(_fetch_wb_indicator,c["wb"],"FM.LBL.BMNY.CN",force):"m2"}
+              pool.submit(_fetch_m1_rows,c,force):"m1",
+              pool.submit(_fetch_wb_indicator,c["wb"],"FM.LBL.BMNY.CN",force):"m2",
+              pool.submit(_fetch_wb_indicator,c["wb"],"GC.TAX.YPKG.CN",force):"tax"}
         if c.get("rf"): futs[pool.submit(_fetch_fred_rows,c["rf"],force)]="rf"
         if c.get("cash"): futs[pool.submit(_fetch_fred_rows,c["cash"],force)]="cash"
         try:
@@ -670,7 +762,8 @@ def country_gravity_history(country_code: str="USA", limit: int=600, force: bool
     index_rows=data.get("index") or [];gdp_rows=data.get("gdp") or [];rf_rows=data.get("rf") or [];cash_rows=data.get("cash") or []
     macro_panel=_make_macro_panel(gdp_rows,data.get("real_gdp") or [],data.get("deflator") or [],
                                   data.get("m1") or [],data.get("m2") or [],frequency="年度",
-                                  currency_basis="本币；World Bank WDI/IMF-IFS 当前版本历史")
+                                  currency_basis=f"本币；{c.get('currency', 'LCU')} / World Bank WDI + OECD/FRED M1",
+                                  tax_rows=data.get("tax") or [],tax_source="World Bank WDI GC.TAX.YPKG.CN（所得、利润及资本利得税收入；非企业税专属）")
     # Use one market observation per year around June. By then the prior fiscal year's
     # GDP has usually been published; GDP g is therefore computed through year-1 to reduce
     # look-ahead. These are trend observations, not ALFRED-vintage-perfect backtest inputs.
@@ -730,10 +823,11 @@ def country_gravity_history(country_code: str="USA", limit: int=600, force: bool
                  {"name":f"Yahoo Finance 股指 {c['symbol']}","url":f"https://finance.yahoo.com/quote/{c['symbol']}/history/","available":bool(index_rows),"count":len(index_rows),"last_observation":index_rows[-1].get("date") if index_rows else None,"definition":c["return_label"]},
                  {"name":f"FRED/OECD 本币10年名义国债收益率 {c.get('rf')}","url":c.get("rf_url"),"available":bool(rf_rows),"count":len(rf_rows),"last_observation":rf_rows[-1].get("date") if rf_rows else None},
                  {"name":f"FRED/OECD 本币短期现金利率 {c.get('cash')}","url":f"https://fred.stlouisfed.org/series/{c.get('cash')}","available":bool(cash_rows),"count":len(cash_rows),"last_observation":cash_rows[-1].get("date") if cash_rows else None},
-                 {"name":"World Bank WDI 实际GDP（本币不变价）","url":f"https://api.worldbank.org/v2/country/{c['wb']}/indicator/NY.GDP.MKTP.KD?format=json&per_page=2000","available":bool(data.get('real_gdp')),"count":len(data.get('real_gdp') or []),"last_observation":(data.get('real_gdp') or [{}])[-1].get('date')},
+                 {"name":"World Bank WDI 实际GDP（本币不变价，NY.GDP.MKTP.KN）","url":f"https://api.worldbank.org/v2/country/{c['wb']}/indicator/NY.GDP.MKTP.KN?format=json&per_page=2000","available":bool(data.get('real_gdp')),"count":len(data.get('real_gdp') or []),"last_observation":(data.get('real_gdp') or [{}])[-1].get('date')},
                  {"name":"World Bank WDI GDP平减指数","url":f"https://api.worldbank.org/v2/country/{c['wb']}/indicator/NY.GDP.DEFL.ZS?format=json&per_page=2000","available":bool(data.get('deflator')),"count":len(data.get('deflator') or []),"last_observation":(data.get('deflator') or [{}])[-1].get('date')},
-                 {"name":"World Bank WDI / IMF-IFS Money (M1口径代理，本币现价)","url":f"https://api.worldbank.org/v2/country/{c['wb']}/indicator/FM.LBL.MONY.CN?format=json&per_page=2000","available":bool(data.get('m1')),"count":len(data.get('m1') or []),"last_observation":(data.get('m1') or [{}])[-1].get('date'),"definition":"Money (current LCU)，来源 IMF-IFS；通常称为较窄口径 M1，但各国编制定义可能有差异"},
-                 {"name":"World Bank WDI / IMF-IFS Broad money（M2/广义货币）","url":f"https://api.worldbank.org/v2/country/{c['wb']}/indicator/FM.LBL.BMNY.CN?format=json&per_page=2000","available":bool(data.get('m2')),"count":len(data.get('m2') or []),"last_observation":(data.get('m2') or [{}])[-1].get('date'),"definition":"Broad money，本币现价；不替代 M1"}]
+                 {"name":"OECD 窄口径 M1（FRED 代理；缺失时退回 WDI/IMF-IFS）","url":f"https://fred.stlouisfed.org/series/MANMM101{c['wb']}189N","available":bool(data.get('m1')),"count":len(data.get('m1') or []),"last_observation":(data.get('m1') or [{}])[-1].get('observation_date') or (data.get('m1') or [{}])[-1].get('date'),"definition":"本国窄口径货币历史；各国定义仍有差异。M1和M2不互相替代"},
+                 {"name":"World Bank WDI / IMF-IFS Broad money（M2/广义货币）","url":f"https://api.worldbank.org/v2/country/{c['wb']}/indicator/FM.LBL.BMNY.CN?format=json&per_page=2000","available":bool(data.get('m2')),"count":len(data.get('m2') or []),"last_observation":(data.get('m2') or [{}])[-1].get('date'),"definition":"Broad money，本币现价；不替代 M1"},
+                 {"name":"所得/利润/资本利得税收入（α广义税收代理）","url":f"https://api.worldbank.org/v2/country/{c['wb']}/indicator/GC.TAX.YPKG.CN?format=json&per_page=2000","available":bool(data.get('tax')),"count":len(data.get('tax') or []),"last_observation":(data.get('tax') or [{}])[-1].get('date'),"definition":"税收口径可能含个人所得税；只作为α的广义税收强度代理，不等同于企业税率"}]
     # Optional US long-run buyer-reference line is explicitly not relabelled as local-market Rbuyer.
     buyer_reference=[]; buyer_reference_note=""
     try:
